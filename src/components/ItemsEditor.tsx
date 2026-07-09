@@ -29,8 +29,8 @@ function NumberField({
   allowNull?: boolean;
 }) {
   return (
-    <label className="flex flex-col gap-1 text-xs text-stone-500">
-      {label}
+    <label className="flex flex-col gap-1">
+      <span className="font-display text-[9px] uppercase tracking-[0.18em] text-ink-soft">{label}</span>
       <input
         type="number"
         inputMode="decimal"
@@ -41,7 +41,7 @@ function NumberField({
           if (e.target.value === "") return onChange(allowNull ? null : 0);
           onChange(Math.max(0, Number(e.target.value)));
         }}
-        className="rounded-lg border border-stone-300 bg-white px-2 py-1.5 text-sm text-stone-800"
+        className="rounded-none border border-line bg-transparent px-2 py-1.5 font-display text-sm tabular-nums focus:border-ink focus:outline-none"
       />
     </label>
   );
@@ -58,33 +58,33 @@ export default function ItemsEditor({
     onChange(items.map((it, i) => (i === index ? { ...it, ...patch } : it)));
   }
   return (
-    <div className="space-y-3">
+    <div className="border-t border-line">
       {items.map((item, i) => (
-        <div key={i} className="space-y-3 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+        <div key={i} className="space-y-3 border-b border-line py-4">
           <div className="flex items-start gap-2">
             <input
               value={item.food_name}
               onChange={(e) => update(i, { food_name: e.target.value })}
               placeholder="Food name"
-              className="flex-1 rounded-lg border border-stone-300 px-2 py-1.5 font-medium"
+              className="flex-1 rounded-none border-0 border-b border-line bg-transparent px-0 py-1 text-lg font-medium placeholder:text-ink-soft/50 focus:border-ink focus:outline-none"
             />
             <button
               type="button"
               onClick={() => onChange(items.filter((_, j) => j !== i))}
               aria-label="Remove item"
-              className="px-2 py-1.5 text-stone-400 hover:text-red-600"
+              className="px-2 py-1 text-ink-soft hover:text-tomato"
             >
               ✕
             </button>
           </div>
           <div className="grid grid-cols-3 gap-2">
-            <label className="col-span-2 flex flex-col gap-1 text-xs text-stone-500">
-              Portion
+            <label className="col-span-2 flex flex-col gap-1">
+              <span className="font-display text-[9px] uppercase tracking-[0.18em] text-ink-soft">Portion</span>
               <input
                 value={item.quantity_desc}
                 onChange={(e) => update(i, { quantity_desc: e.target.value })}
                 placeholder="e.g. 1 bowl"
-                className="rounded-lg border border-stone-300 bg-white px-2 py-1.5 text-sm text-stone-800"
+                className="rounded-none border border-line bg-transparent px-2 py-1.5 text-sm focus:border-ink focus:outline-none"
               />
             </label>
             <NumberField label="Grams" value={item.grams} allowNull onChange={(v) => update(i, { grams: v })} />
@@ -96,10 +96,10 @@ export default function ItemsEditor({
             <NumberField label="Fat" value={item.fat_g} onChange={(v) => update(i, { fat_g: v ?? 0 })} />
           </div>
           {item.confidence < 0.95 && (
-            <p className="text-xs text-stone-400">AI confidence: {Math.round(item.confidence * 100)}%</p>
+            <p className="text-xs italic text-ink-soft">AI confidence: {Math.round(item.confidence * 100)}%</p>
           )}
           {item.assumptions.length > 0 && (
-            <ul className="list-disc pl-4 text-xs text-stone-400">
+            <ul className="list-disc pl-4 text-xs italic text-ink-soft marker:text-tomato">
               {item.assumptions.map((a, j) => (
                 <li key={j}>{a}</li>
               ))}
@@ -110,7 +110,7 @@ export default function ItemsEditor({
       <button
         type="button"
         onClick={() => onChange([...items, emptyItem()])}
-        className="w-full rounded-xl border border-dashed border-stone-300 py-2.5 text-sm text-stone-500"
+        className="mt-3 w-full border border-dashed border-line py-2.5 font-display text-[11px] uppercase tracking-[0.2em] text-ink-soft hover:border-ink hover:text-ink"
       >
         + Add item
       </button>

@@ -1,5 +1,13 @@
 import type { Metadata, Viewport } from "next";
+import { Newsreader, Oswald } from "next/font/google";
 import "./globals.css";
+
+const oswald = Oswald({ subsets: ["latin"], variable: "--font-oswald" });
+const newsreader = Newsreader({
+  subsets: ["latin"],
+  style: ["normal", "italic"],
+  variable: "--font-newsreader",
+});
 
 export const metadata: Metadata = {
   title: "BiteLog",
@@ -7,7 +15,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#059669",
+  themeColor: "#faf6ef",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
@@ -16,7 +24,11 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="bg-stone-50 text-stone-800 antialiased">{children}</body>
+      <body
+        className={`${oswald.variable} ${newsreader.variable} bg-paper font-serif text-ink antialiased`}
+      >
+        {children}
+      </body>
     </html>
   );
 }

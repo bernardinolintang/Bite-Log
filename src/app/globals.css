@@ -1,1 +1,14 @@
 @import "tailwindcss";
+
+@theme {
+  --color-paper: #faf6ef;
+  --color-paper-deep: #f1e9db;
+  --color-ink: #211d18;
+  --color-ink-soft: #6e6559;
+  --color-line: #e3d9c7;
+  --color-tomato: #c93a1d;
+  --color-tomato-deep: #a52e15;
+  --color-tomato-tint: #e2a896;
+  --font-display: var(--font-oswald), sans-serif;
+  --font-serif: var(--font-newsreader), serif;
+}

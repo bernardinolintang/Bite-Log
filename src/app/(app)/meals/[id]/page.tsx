@@ -13,24 +13,26 @@ export default async function MealDetailPage({ params }: { params: Promise<{ id:
   if (!meal) notFound();
 
   return (
-    <main className="space-y-4 p-4">
-      <header>
-        <h1 className="text-xl font-bold">{meal.aiSummary || "Meal"}</h1>
-        <p className="text-sm capitalize text-stone-500">
+    <main className="space-y-5 p-5">
+      <header className="border-b-2 border-ink pb-3">
+        <h1 className="text-2xl font-medium">{meal.aiSummary || "Meal"}</h1>
+        <p className="mt-1 font-display text-[10px] uppercase tracking-[0.2em] text-ink-soft">
           {meal.mealType} · {formatDisplayDate(meal.loggedDate)}
         </p>
       </header>
 
       {meal.thumbnail && (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={meal.thumbnail} alt="Meal photo" className="w-full rounded-2xl" />
+        <img src={meal.thumbnail} alt="Meal photo" className="w-full" />
       )}
 
-      {meal.description && <p className="text-sm text-stone-600">&ldquo;{meal.description}&rdquo;</p>}
+      {meal.description && (
+        <p className="border-l-2 border-tomato pl-4 text-sm italic text-ink-soft">&ldquo;{meal.description}&rdquo;</p>
+      )}
 
       <MealEditor mealId={meal.id} initialItems={meal.items.map(dbItemToFoodItem)} />
 
-      <p className="text-center text-xs text-stone-400">Estimates only — edit anything that looks off.</p>
+      <p className="text-center text-sm italic text-ink-soft">Estimates only — edit anything that looks off.</p>
       <DeleteMealButton mealId={meal.id} />
     </main>
   );

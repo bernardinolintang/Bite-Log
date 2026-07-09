@@ -20,7 +20,7 @@ export default function DeleteMealButton({ mealId }: { mealId: string }) {
       type="button"
       onClick={() => void del()}
       disabled={busy}
-      className="w-full py-2 text-sm text-red-600 underline disabled:opacity-50"
+      className="w-full py-2 text-sm italic text-tomato underline underline-offset-4 disabled:opacity-50"
     >
       {busy ? "Deleting…" : "Delete meal"}
     </button>

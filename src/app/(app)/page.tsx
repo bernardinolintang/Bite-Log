@@ -20,52 +20,64 @@ export default async function Dashboard() {
   const recentOther = recent.filter((m) => m.loggedDate !== today).slice(0, 3);
 
   return (
-    <main className="space-y-4 p-4">
-      <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-bold">Today</h1>
-        <span className="text-sm text-stone-500">{formatDisplayDate(today)}</span>
+    <main className="space-y-6 p-5">
+      <header className="flex items-baseline justify-between border-b-2 border-ink pb-3">
+        <h1 className="font-display text-sm font-medium uppercase tracking-[0.25em]">Today</h1>
+        <span className="italic text-ink-soft">{formatDisplayDate(today)}</span>
       </header>
 
       <MacroSummary totals={totals} prefs={prefs} />
 
       <Link
         href="/add"
-        className="block w-full rounded-xl bg-emerald-600 py-3 text-center font-semibold text-white shadow-sm"
+        className="block w-full bg-tomato py-3.5 text-center font-display text-sm uppercase tracking-[0.2em] text-paper"
       >
-        📸 Add meal
+        Add meal +
       </Link>
 
-      <section className="space-y-2">
-        <h2 className="text-sm font-semibold text-stone-500">Today&apos;s meals</h2>
+      <section>
+        <h2 className="font-display text-[11px] font-medium uppercase tracking-[0.25em] text-ink-soft">
+          Today&apos;s meals
+        </h2>
         {mealsToday.length === 0 ? (
-          <p className="rounded-2xl border border-dashed border-stone-300 p-6 text-center text-sm text-stone-400">
-            Nothing logged yet — snap your next meal!
+          <p className="border-b border-line py-8 text-center italic text-ink-soft">
+            Nothing logged yet — snap your next meal.
           </p>
         ) : (
-          mealsToday.map((m) => <MealCard key={m.id} meal={m} />)
+          <div className="mt-1">
+            {mealsToday.map((m) => (
+              <MealCard key={m.id} meal={m} />
+            ))}
+          </div>
         )}
       </section>
 
       {recentOther.length > 0 && (
-        <section className="space-y-2">
-          <h2 className="text-sm font-semibold text-stone-500">Recent meals</h2>
-          {recentOther.map((m) => (
-            <div key={m.id} className="flex items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <MealCard meal={m} />
+        <section>
+          <h2 className="font-display text-[11px] font-medium uppercase tracking-[0.25em] text-ink-soft">
+            Recent meals
+          </h2>
+          <div className="mt-1">
+            {recentOther.map((m) => (
+              <div key={m.id} className="flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <MealCard meal={m} />
+                </div>
+                <RelogButton
+                  mealType={m.mealType}
+                  aiSummary={m.aiSummary}
+                  thumbnail={m.thumbnail}
+                  items={m.items.map(dbItemToFoodItem)}
+                />
               </div>
-              <RelogButton
-                mealType={m.mealType}
-                aiSummary={m.aiSummary}
-                thumbnail={m.thumbnail}
-                items={m.items.map(dbItemToFoodItem)}
-              />
-            </div>
-          ))}
+            ))}
+          </div>
         </section>
       )}
 
-      <p className="text-center text-xs text-stone-400">All numbers are AI estimates — edit anything that looks off.</p>
+      <p className="text-center text-sm italic text-ink-soft">
+        All numbers are AI estimates — edit anything that looks off.
+      </p>
     </main>
   );
 }

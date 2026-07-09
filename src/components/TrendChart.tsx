@@ -17,18 +17,19 @@ export default function TrendChart({
   const slot = W / data.length;
   const barW = Math.min(28, slot - 8);
   const last = data.length - 1;
+  const label = { fontFamily: "var(--font-oswald)" } as const;
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Calories over the last 7 days" className="w-full">
       <clipPath id="trend-clip">
         <rect x="0" y="0" width={W} height={baseline} />
       </clipPath>
-      <line x1="0" x2={W} y1={baseline} y2={baseline} stroke="#e7e5e4" strokeWidth="1" />
+      <line x1="0" x2={W} y1={baseline} y2={baseline} stroke="#e3d9c7" strokeWidth="1" />
       {target != null && (
         <g>
-          <line x1="0" x2={W} y1={y(target)} y2={y(target)} stroke="#a8a29e" strokeWidth="1" strokeDasharray="4 3" />
-          <text x={W - 2} y={y(target) - 4} textAnchor="end" fontSize="9" fill="#78716c">
-            target
+          <line x1="0" x2={W} y1={y(target)} y2={y(target)} stroke="#211d18" strokeWidth="1" strokeDasharray="4 3" />
+          <text x={W - 2} y={y(target) - 4} textAnchor="end" fontSize="9" fill="#6e6559" style={label}>
+            TARGET
           </text>
         </g>
       )}
@@ -40,13 +41,13 @@ export default function TrendChart({
           return (
             <g key={d.date}>
               <title>{`${d.date}: ${Math.round(d.calories)} kcal`}</title>
-              <rect x={x} y={barY} width={barW} height={h + 4} rx="4" fill={i === last ? "#059669" : "#34d399"} />
+              <rect x={x} y={barY} width={barW} height={h + 4} rx="4" fill={i === last ? "#c93a1d" : "#e2a896"} />
             </g>
           );
         })}
       </g>
       {data.map((d, i) => (
-        <text key={d.date} x={i * slot + slot / 2} y={H - 6} textAnchor="middle" fontSize="10" fill="#78716c">
+        <text key={d.date} x={i * slot + slot / 2} y={H - 6} textAnchor="middle" fontSize="10" fill="#6e6559" style={label}>
           {weekdayLetter(d.date)}
         </text>
       ))}
@@ -57,7 +58,8 @@ export default function TrendChart({
           textAnchor="middle"
           fontSize="10"
           fontWeight="600"
-          fill="#44403c"
+          fill="#211d18"
+          style={label}
         >
           {Math.round(data[last].calories)}
         </text>

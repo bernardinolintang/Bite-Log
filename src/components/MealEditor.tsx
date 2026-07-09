@@ -35,17 +35,17 @@ export default function MealEditor({ mealId, initialItems }: { mealId: string; i
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {editing ? (
         <>
           <ItemsEditor items={items} onChange={setItems} />
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm italic text-tomato">{error}</p>}
           <div className="flex gap-2">
             <button
               type="button"
               onClick={() => void saveEdits()}
               disabled={saving}
-              className="flex-1 rounded-xl bg-emerald-600 py-2.5 font-semibold text-white disabled:opacity-50"
+              className="flex-1 bg-tomato py-3 font-display text-sm uppercase tracking-[0.2em] text-paper disabled:opacity-50"
             >
               {saving ? "Saving…" : "Save changes"}
             </button>
@@ -56,7 +56,7 @@ export default function MealEditor({ mealId, initialItems }: { mealId: string; i
                 setEditing(false);
                 setError("");
               }}
-              className="rounded-xl border border-stone-300 px-4 py-2.5 text-sm"
+              className="border border-ink px-4 py-3 font-display text-[11px] uppercase tracking-[0.15em]"
             >
               Cancel
             </button>
@@ -64,20 +64,23 @@ export default function MealEditor({ mealId, initialItems }: { mealId: string; i
         </>
       ) : (
         <>
-          <ul className="space-y-2">
+          <ul className="border-t border-line">
             {items.map((item, i) => (
-              <li key={i} className="rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
+              <li key={i} className="border-b border-line py-3">
                 <div className="flex items-baseline justify-between">
                   <span className="font-medium">{item.food_name}</span>
-                  <span className="text-sm font-semibold">{Math.round(item.calories)} kcal</span>
+                  <span className="font-display font-medium tabular-nums">
+                    {Math.round(item.calories)}
+                    <span className="ml-1 text-xs font-normal text-ink-soft">kcal</span>
+                  </span>
                 </div>
-                <p className="text-xs text-stone-500">
+                <p className="text-xs italic text-ink-soft">
                   {item.quantity_desc}
                   {item.grams ? ` · ${Math.round(item.grams)}g` : ""} · P {item.protein_g}g · C {item.carbs_g}g · F{" "}
                   {item.fat_g}g
                 </p>
                 {item.assumptions.length > 0 && (
-                  <ul className="mt-1 list-disc pl-4 text-xs text-stone-400">
+                  <ul className="mt-1 list-disc pl-4 text-xs italic text-ink-soft marker:text-tomato">
                     {item.assumptions.map((a, j) => (
                       <li key={j}>{a}</li>
                     ))}
@@ -86,21 +89,21 @@ export default function MealEditor({ mealId, initialItems }: { mealId: string; i
               </li>
             ))}
           </ul>
-          <div className="flex items-baseline justify-between rounded-2xl bg-stone-100 px-4 py-3">
-            <span className="text-sm text-stone-500">Total</span>
-            <span>
-              <strong>{Math.round(totals.calories)} kcal</strong>
-              <span className="ml-2 text-xs text-stone-500">
-                P {totals.protein_g}g · C {totals.carbs_g}g · F {totals.fat_g}g
+          <div className="flex items-baseline justify-between border-t-2 border-ink pt-3">
+            <span className="font-display text-[11px] uppercase tracking-[0.25em] text-ink-soft">Total</span>
+            <span className="flex items-baseline gap-2">
+              <strong className="font-display text-2xl font-medium tabular-nums">{Math.round(totals.calories)}</strong>
+              <span className="text-xs text-ink-soft">
+                kcal · P {totals.protein_g}g · C {totals.carbs_g}g · F {totals.fat_g}g
               </span>
             </span>
           </div>
           <button
             type="button"
             onClick={() => setEditing(true)}
-            className="w-full rounded-xl border border-stone-300 py-2.5 text-sm font-medium"
+            className="w-full border border-ink py-2.5 font-display text-[11px] uppercase tracking-[0.2em] hover:bg-ink hover:text-paper"
           >
-            ✏️ Edit items
+            Edit items
           </button>
         </>
       )}

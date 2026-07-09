@@ -31,7 +31,7 @@ export default function RelogButton({
       type="button"
       onClick={() => void relog()}
       disabled={busy}
-      className="rounded-full border border-emerald-600 px-3 py-1 text-xs font-medium text-emerald-700 disabled:opacity-50"
+      className="rounded-none border border-ink px-3 py-1.5 font-display text-[10px] uppercase tracking-[0.15em] text-ink hover:bg-ink hover:text-paper disabled:opacity-50"
     >
       {busy ? "Logging…" : "Log again"}
     </button>

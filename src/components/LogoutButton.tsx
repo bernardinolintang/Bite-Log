@@ -9,7 +9,11 @@ export default function LogoutButton() {
     router.refresh();
   }
   return (
-    <button type="button" onClick={() => void logout()} className="w-full py-2 text-sm text-stone-500 underline">
+    <button
+      type="button"
+      onClick={() => void logout()}
+      className="w-full py-2 text-sm italic text-ink-soft underline underline-offset-4"
+    >
       Log out
     </button>
   );

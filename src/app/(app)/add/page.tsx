@@ -20,6 +20,25 @@ function defaultMealType(): MealType {
   return "dinner";
 }
 
+function CameraIcon() {
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path d="M3 8a2 2 0 0 1 2-2h1.5l1.2-2h8.6l1.2 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z" />
+      <circle cx="12" cy="13" r="3.5" />
+    </svg>
+  );
+}
+
+function ImageIcon() {
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <rect x="3" y="4" width="18" height="16" />
+      <circle cx="9" cy="10" r="1.6" />
+      <path d="M3 17l5-5 4 4 3-3 6 6" />
+    </svg>
+  );
+}
+
 export default function AddMealPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>("input");
@@ -127,17 +146,19 @@ export default function AddMealPage() {
   const totals = calcTotals(items);
 
   return (
-    <main className="space-y-4 p-4">
-      <h1 className="text-xl font-bold">Add meal</h1>
+    <main className="space-y-5 p-5">
+      <header className="border-b-2 border-ink pb-3">
+        <h1 className="font-display text-sm font-medium uppercase tracking-[0.25em]">Add meal</h1>
+      </header>
 
-      <div className="grid grid-cols-4 gap-1 rounded-xl bg-stone-200 p-1">
+      <div className="flex border-b border-line">
         {MEAL_TYPES.map((t) => (
           <button
             key={t}
             type="button"
             onClick={() => setMealType(t)}
-            className={`rounded-lg py-1.5 text-sm capitalize ${
-              mealType === t ? "bg-white font-semibold shadow-sm" : "text-stone-500"
+            className={`flex-1 border-b-2 pb-2 pt-1 font-display text-[11px] uppercase tracking-[0.15em] ${
+              mealType === t ? "border-tomato text-tomato" : "border-transparent text-ink-soft"
             }`}
           >
             {t}
@@ -153,13 +174,13 @@ export default function AddMealPage() {
             onChange={(e) => onFile(e.target.files?.[0])} />
 
           {thumb ? (
-            <div className="relative overflow-hidden rounded-2xl">
+            <div className="relative overflow-hidden">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={thumb} alt="Meal preview" className="w-full" />
               <button
                 type="button"
                 onClick={() => { setLarge(null); setThumb(null); }}
-                className="absolute right-2 top-2 rounded-full bg-black/60 px-2.5 py-1 text-sm text-white"
+                className="absolute right-2 top-2 bg-ink/80 px-2.5 py-1 font-display text-[10px] uppercase tracking-[0.15em] text-paper"
               >
                 ✕ Remove
               </button>
@@ -167,14 +188,14 @@ export default function AddMealPage() {
           ) : (
             <div className="grid grid-cols-2 gap-3">
               <button type="button" onClick={() => cameraRef.current?.click()}
-                className="flex flex-col items-center gap-2 rounded-2xl border border-stone-200 bg-white py-8 shadow-sm">
-                <span className="text-3xl">📸</span>
-                <span className="text-sm font-medium">Take photo</span>
+                className="flex flex-col items-center gap-3 border border-line py-8 text-ink hover:border-ink">
+                <CameraIcon />
+                <span className="font-display text-[11px] uppercase tracking-[0.18em]">Take photo</span>
               </button>
               <button type="button" onClick={() => galleryRef.current?.click()}
-                className="flex flex-col items-center gap-2 rounded-2xl border border-stone-200 bg-white py-8 shadow-sm">
-                <span className="text-3xl">🖼️</span>
-                <span className="text-sm font-medium">Upload</span>
+                className="flex flex-col items-center gap-3 border border-line py-8 text-ink hover:border-ink">
+                <ImageIcon />
+                <span className="font-display text-[11px] uppercase tracking-[0.18em]">Upload</span>
               </button>
             </div>
           )}
@@ -184,56 +205,60 @@ export default function AddMealPage() {
             onChange={(e) => setDescription(e.target.value)}
             placeholder="…or describe the meal (e.g. 'chicken rice with iced milo')"
             rows={3}
-            className="w-full rounded-2xl border border-stone-200 bg-white p-3 text-sm shadow-sm"
+            className="w-full rounded-none border border-line bg-transparent p-3 text-sm placeholder:italic placeholder:text-ink-soft/60 focus:border-ink focus:outline-none"
           />
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm italic text-tomato">{error}</p>}
 
           <button
             type="button"
             onClick={() => void analyze()}
             disabled={!large && !description.trim()}
-            className="w-full rounded-xl bg-emerald-600 py-3 font-semibold text-white disabled:opacity-40"
+            className="w-full bg-tomato py-3.5 font-display text-sm uppercase tracking-[0.2em] text-paper disabled:opacity-40"
           >
             Analyze with AI
           </button>
-          <button type="button" onClick={startManual} className="w-full py-2 text-sm text-stone-500 underline">
+          <button type="button" onClick={startManual} className="w-full py-1 text-sm italic text-ink-soft underline underline-offset-4">
             Enter manually instead
           </button>
-          <p className="text-center text-xs text-stone-400">
+          <p className="text-center text-xs italic text-ink-soft">
             Photos are analyzed by AI and not stored — only a small thumbnail is kept.
           </p>
         </>
       )}
 
       {phase === "analyzing" && (
-        <div className="flex flex-col items-center gap-3 py-16">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-600 border-t-transparent" />
-          <p className="text-sm text-stone-500">Analyzing your meal…</p>
+        <div className="flex flex-col items-center gap-4 py-16">
+          <div className="flex gap-1.5">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-tomato" />
+            <span className="h-2 w-2 animate-pulse rounded-full bg-tomato [animation-delay:150ms]" />
+            <span className="h-2 w-2 animate-pulse rounded-full bg-tomato [animation-delay:300ms]" />
+          </div>
+          <p className="italic text-ink-soft">Reading your meal…</p>
         </div>
       )}
 
       {phase === "review" && (
         <>
-          {summary && <p className="font-medium">{summary}</p>}
-          <p className="text-xs text-stone-400">Estimates only — tap any number to correct it.</p>
+          {summary && <p className="text-xl font-medium">{summary}</p>}
+          <p className="text-sm italic text-ink-soft">Estimates only — tap any number to correct it.</p>
 
           {questions.length > 0 && (
-            <div className="space-y-2 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-              <p className="text-sm font-medium text-amber-900">Quick questions to improve the estimate (optional):</p>
+            <div className="space-y-3 border-l-2 border-tomato pl-4">
+              <p className="text-sm font-medium">A few questions to sharpen the estimate (optional):</p>
               {questions.map((q, i) => (
-                <label key={i} className="block text-sm text-amber-900">
+                <label key={i} className="block text-sm italic">
                   {q}
                   <input
                     value={answers[i] ?? ""}
                     onChange={(e) => setAnswers({ ...answers, [i]: e.target.value })}
-                    className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-2 py-1.5 text-sm"
+                    className="mt-1 w-full rounded-none border-0 border-b border-line bg-transparent px-0 py-1 text-sm not-italic focus:border-ink focus:outline-none"
                   />
                 </label>
               ))}
               <button type="button" onClick={refine}
                 disabled={!Object.values(answers).some((a) => a.trim())}
-                className="rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">
+                className="border border-tomato px-3 py-1.5 font-display text-[10px] uppercase tracking-[0.15em] text-tomato hover:bg-tomato hover:text-paper disabled:opacity-40">
                 Refine estimate
               </button>
             </div>
@@ -241,23 +266,23 @@ export default function AddMealPage() {
 
           <ItemsEditor items={items} onChange={setItems} />
 
-          <div className="flex items-baseline justify-between rounded-2xl bg-stone-100 px-4 py-3">
-            <span className="text-sm text-stone-500">Total</span>
-            <span>
-              <strong>{Math.round(totals.calories)} kcal</strong>
-              <span className="ml-2 text-xs text-stone-500">
-                P {totals.protein_g}g · C {totals.carbs_g}g · F {totals.fat_g}g
+          <div className="flex items-baseline justify-between border-t-2 border-ink pt-3">
+            <span className="font-display text-[11px] uppercase tracking-[0.25em] text-ink-soft">Total</span>
+            <span className="flex items-baseline gap-2">
+              <strong className="font-display text-2xl font-medium tabular-nums">{Math.round(totals.calories)}</strong>
+              <span className="text-xs text-ink-soft">
+                kcal · P {totals.protein_g}g · C {totals.carbs_g}g · F {totals.fat_g}g
               </span>
             </span>
           </div>
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm italic text-tomato">{error}</p>}
 
           <button type="button" onClick={() => void save()} disabled={saving || items.length === 0}
-            className="w-full rounded-xl bg-emerald-600 py-3 font-semibold text-white disabled:opacity-40">
+            className="w-full bg-tomato py-3.5 font-display text-sm uppercase tracking-[0.2em] text-paper disabled:opacity-40">
             {saving ? "Saving…" : "Save meal"}
           </button>
-          <button type="button" onClick={() => setPhase("input")} className="w-full py-2 text-sm text-stone-500 underline">
+          <button type="button" onClick={() => setPhase("input")} className="w-full py-1 text-sm italic text-ink-soft underline underline-offset-4">
             Back
           </button>
         </>

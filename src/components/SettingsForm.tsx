@@ -15,9 +15,9 @@ function TargetField({
   unit: string;
 }) {
   return (
-    <label className="flex items-center justify-between gap-3 rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
-      <span className="text-sm">{label}</span>
-      <span className="flex items-center gap-1">
+    <label className="flex items-center justify-between gap-3 border-b border-line py-3">
+      <span>{label}</span>
+      <span className="flex items-baseline gap-2">
         <input
           type="number"
           inputMode="numeric"
@@ -25,9 +25,9 @@ function TargetField({
           value={value ?? ""}
           placeholder="—"
           onChange={(e) => onChange(e.target.value === "" ? null : Math.max(0, Number(e.target.value)))}
-          className="w-24 rounded-lg border border-stone-300 px-2 py-1.5 text-right text-sm"
+          className="w-24 rounded-none border-0 border-b border-line bg-transparent px-0 py-1 text-right font-display tabular-nums focus:border-ink focus:outline-none"
         />
-        <span className="text-xs text-stone-500">{unit}</span>
+        <span className="font-display text-[10px] uppercase tracking-[0.15em] text-ink-soft">{unit}</span>
       </span>
     </label>
   );
@@ -62,21 +62,23 @@ export default function SettingsForm({ initial }: { initial: SettingsRow }) {
   }
 
   return (
-    <div className="space-y-3">
-      <TargetField label="Daily calories" value={calorieTarget} onChange={setCalorieTarget} unit="kcal" />
-      <TargetField label="Protein" value={proteinTarget} onChange={setProteinTarget} unit="g" />
-      <TargetField label="Carbs" value={carbsTarget} onChange={setCarbsTarget} unit="g" />
-      <TargetField label="Fat" value={fatTarget} onChange={setFatTarget} unit="g" />
+    <div className="space-y-5">
+      <div className="border-t border-line">
+        <TargetField label="Daily calories" value={calorieTarget} onChange={setCalorieTarget} unit="kcal" />
+        <TargetField label="Protein" value={proteinTarget} onChange={setProteinTarget} unit="g" />
+        <TargetField label="Carbs" value={carbsTarget} onChange={setCarbsTarget} unit="g" />
+        <TargetField label="Fat" value={fatTarget} onChange={setFatTarget} unit="g" />
+      </div>
       <button
         type="button"
         onClick={() => void save()}
         disabled={status === "saving"}
-        className="w-full rounded-xl bg-emerald-600 py-3 font-semibold text-white disabled:opacity-50"
+        className="w-full bg-tomato py-3.5 font-display text-sm uppercase tracking-[0.2em] text-paper disabled:opacity-50"
       >
         {status === "saving" ? "Saving…" : "Save targets"}
       </button>
-      {status === "saved" && <p className="text-center text-sm text-emerald-700">Saved ✓</p>}
-      {status === "error" && <p className="text-center text-sm text-red-600">Couldn&apos;t save — try again.</p>}
+      {status === "saved" && <p className="text-center text-sm italic text-ink-soft">Saved.</p>}
+      {status === "error" && <p className="text-center text-sm italic text-tomato">Couldn&apos;t save — try again.</p>}
     </div>
   );
 }

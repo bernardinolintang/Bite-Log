@@ -1,21 +1,19 @@
 # 🥗 BiteLog
 
 Personal AI meal logger: snap a photo or describe a meal → an AI vision model estimates
-calories and macros → edit anything → save to your daily log. Single user, password-gated,
-built to deploy on Vercel. All numbers are estimates for awareness — not medical advice.
+calories and macros → edit anything → save to your daily log. Built to deploy on Vercel.
+All numbers are estimates for awareness — not medical advice.
 
 ## Stack
 
 Next.js (App Router) · Tailwind CSS · Drizzle ORM + libSQL (local file in dev, Turso in prod) ·
-Groq API (OpenAI-compatible, Llama 4 vision) · Zod · jose · Vitest
+Groq API (OpenAI-compatible, Llama 4 vision) · Zod · Vitest
 
 ## Local setup
 
 1. `npm install`
 2. `cp .env.example .env` and fill in:
    - `GROQ_API_KEY` — from https://console.groq.com/keys (free tier works)
-   - `APP_PASSWORD` — the password you'll log in with
-   - `SESSION_SECRET` — `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
 3. `npm run db:push` — creates `local.db`
 4. `npm run dev` — open http://localhost:3000
 
@@ -37,9 +35,11 @@ Vercel version has HTTPS and always works).
 3. Apply the schema to Turso: temporarily set both values in `.env`, run `npm run db:push`,
    then restore `DATABASE_URL=file:local.db` for local dev.
 4. Import the repo at https://vercel.com/new and set env vars:
-   `GROQ_API_KEY`, `GROQ_MODEL`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`,
-   `APP_PASSWORD`, `SESSION_SECRET`, `APP_TIMEZONE`
+   `GROQ_API_KEY`, `GROQ_MODEL`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `APP_TIMEZONE`
 5. Deploy. On your phone, open the URL and "Add to Home Screen" to install it like an app.
+
+If the deployment URL is public, anyone who finds it can use the app. For a personal deployment,
+consider keeping the Vercel URL private or enabling [Vercel Deployment Protection](https://vercel.com/docs/security/deployment-protection).
 
 ## Notes
 

@@ -1,5 +1,6 @@
 "use client";
 import type { FoodItem } from "@/lib/ai/schema";
+import { isLowConfidence } from "@/lib/food-memory";
 
 export function emptyItem(): FoodItem {
   return {
@@ -59,8 +60,14 @@ export default function ItemsEditor({
   }
   return (
     <div className="border-t border-line">
-      {items.map((item, i) => (
-        <div key={i} className="space-y-3 border-b border-line py-4">
+      {items.map((item, i) => {
+        const lowConfidence = isLowConfidence(item.confidence);
+        const savedCorrection = item.assumptions.some((a) => a.includes("saved correction"));
+        return (
+        <div
+          key={i}
+          className={`space-y-3 border-b border-line py-4 ${lowConfidence ? "border-l-2 border-l-tomato pl-3" : ""}`}
+        >
           <div className="flex items-start gap-2">
             <input
               value={item.food_name}
@@ -77,6 +84,20 @@ export default function ItemsEditor({
               ✕
             </button>
           </div>
+          {(lowConfidence || savedCorrection) && (
+            <div className="flex flex-wrap gap-2">
+              {lowConfidence && (
+                <span className="bg-tomato/10 px-2 py-0.5 font-display text-[9px] uppercase tracking-[0.15em] text-tomato">
+                  Low confidence · {Math.round(item.confidence * 100)}%
+                </span>
+              )}
+              {savedCorrection && (
+                <span className="bg-ink/5 px-2 py-0.5 font-display text-[9px] uppercase tracking-[0.15em] text-ink-soft">
+                  Your saved values
+                </span>
+              )}
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-2">
             <label className="col-span-2 flex flex-col gap-1">
               <span className="font-display text-[9px] uppercase tracking-[0.18em] text-ink-soft">Portion</span>
@@ -95,9 +116,6 @@ export default function ItemsEditor({
             <NumberField label="Carbs" value={item.carbs_g} onChange={(v) => update(i, { carbs_g: v ?? 0 })} />
             <NumberField label="Fat" value={item.fat_g} onChange={(v) => update(i, { fat_g: v ?? 0 })} />
           </div>
-          {item.confidence < 0.95 && (
-            <p className="text-xs italic text-ink-soft">AI confidence: {Math.round(item.confidence * 100)}%</p>
-          )}
           {item.assumptions.length > 0 && (
             <ul className="list-disc pl-4 text-xs italic text-ink-soft marker:text-tomato">
               {item.assumptions.map((a, j) => (
@@ -106,7 +124,8 @@ export default function ItemsEditor({
             </ul>
           )}
         </div>
-      ))}
+        );
+      })}
       <button
         type="button"
         onClick={() => onChange([...items, emptyItem()])}

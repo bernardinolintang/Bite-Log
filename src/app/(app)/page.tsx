@@ -1,9 +1,10 @@
 import Link from "next/link";
 import MacroSummary from "@/components/MacroSummary";
 import MealCard from "@/components/MealCard";
-import RelogButton from "@/components/RelogButton";
+import QuickLogSection from "@/components/QuickLogSection";
 import { dbItemToFoodItem } from "@/lib/convert";
-import { getMealsByDate, getRecentMeals, getSettings } from "@/lib/db/queries";
+import { getTopSavedMeals } from "@/lib/db/memory";
+import { getMealsByDate, getSettings } from "@/lib/db/queries";
 import { formatDisplayDate, todayString } from "@/lib/dates";
 import { calcTotals } from "@/lib/nutrition";
 
@@ -11,13 +12,12 @@ export const dynamic = "force-dynamic";
 
 export default async function Dashboard() {
   const today = todayString();
-  const [mealsToday, recent, prefs] = await Promise.all([
+  const [mealsToday, quickLogs, prefs] = await Promise.all([
     getMealsByDate(today),
-    getRecentMeals(8),
+    getTopSavedMeals(6),
     getSettings(),
   ]);
   const totals = calcTotals(mealsToday.flatMap((m) => m.items.map(dbItemToFoodItem)));
-  const recentOther = recent.filter((m) => m.loggedDate !== today).slice(0, 3);
 
   return (
     <main className="space-y-6 p-5">
@@ -35,6 +35,8 @@ export default async function Dashboard() {
         Add meal +
       </Link>
 
+      <QuickLogSection savedMeals={quickLogs} />
+
       <section>
         <h2 className="font-display text-[11px] font-medium uppercase tracking-[0.25em] text-ink-soft">
           Today&apos;s meals
@@ -51,29 +53,6 @@ export default async function Dashboard() {
           </div>
         )}
       </section>
-
-      {recentOther.length > 0 && (
-        <section>
-          <h2 className="font-display text-[11px] font-medium uppercase tracking-[0.25em] text-ink-soft">
-            Recent meals
-          </h2>
-          <div className="mt-1">
-            {recentOther.map((m) => (
-              <div key={m.id} className="flex items-center gap-3">
-                <div className="min-w-0 flex-1">
-                  <MealCard meal={m} />
-                </div>
-                <RelogButton
-                  mealType={m.mealType}
-                  aiSummary={m.aiSummary}
-                  thumbnail={m.thumbnail}
-                  items={m.items.map(dbItemToFoodItem)}
-                />
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
 
       <p className="text-center text-sm italic text-ink-soft">
         All numbers are AI estimates — edit anything that looks off.

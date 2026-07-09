@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { foodItemSchema } from "@/lib/ai/schema";
 import { foodItemToDbValues } from "@/lib/convert";
+import { rememberMealItems } from "@/lib/db/memory";
 import { db } from "@/lib/db";
 import { mealItems, meals } from "@/lib/db/schema";
 
@@ -33,6 +34,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   if (d.items) {
     await db.delete(mealItems).where(eq(mealItems.mealId, id));
     await db.insert(mealItems).values(d.items.map((i) => foodItemToDbValues(i, id)));
+    await rememberMealItems(d.items);
   }
   return NextResponse.json({ ok: true });
 }

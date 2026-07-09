@@ -1,11 +1,13 @@
 import { desc, eq } from "drizzle-orm";
 import { db } from "./index";
-import { mealItems, meals, settings } from "./schema";
+import { mealItems, meals, settings, foodTemplates, savedMeals } from "./schema";
 
 export type MealRow = typeof meals.$inferSelect;
 export type MealItemRow = typeof mealItems.$inferSelect;
 export type MealWithItems = MealRow & { items: MealItemRow[] };
 export type SettingsRow = typeof settings.$inferSelect;
+export type FoodTemplateRow = typeof foodTemplates.$inferSelect;
+export type SavedMealRow = typeof savedMeals.$inferSelect;
 
 export async function getMealsByDate(date: string): Promise<MealWithItems[]> {
   return db.query.meals.findMany({

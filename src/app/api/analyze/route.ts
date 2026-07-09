@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { analyzeMeal } from "@/lib/ai/analyze";
+import { applyFoodMemory } from "@/lib/food-memory";
+import { getAllFoodTemplates } from "@/lib/db/memory";
 import { calcTotals } from "@/lib/nutrition";
 
 export const maxDuration = 30;
@@ -27,7 +29,9 @@ export async function POST(req: NextRequest) {
   const { image, description, mealType, clarifications } = parsed.data;
   try {
     const analysis = await analyzeMeal({ imageDataUrl: image, description, mealType, clarifications });
-    return NextResponse.json({ ...analysis, totals: calcTotals(analysis.items) });
+    const templates = await getAllFoodTemplates();
+    const items = applyFoodMemory(analysis.items, templates);
+    return NextResponse.json({ ...analysis, items, totals: calcTotals(items) });
   } catch (err) {
     console.error("analyze failed:", err);
     return NextResponse.json(

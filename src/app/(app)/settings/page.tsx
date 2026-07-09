@@ -1,6 +1,5 @@
-import LogoutButton from "@/components/LogoutButton";
-import SettingsForm from "@/components/SettingsForm";
-import { getSettings } from "@/lib/db/queries";
+import ExportButton from "@/components/ExportButton";
+import SettingsForm from "@/components/SettingsForm";import { getSettings } from "@/lib/db/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +15,7 @@ export default async function SettingsPage() {
         Targets are optional — they&apos;re here for awareness, not restriction. Clear a field to remove its target.
       </p>
       <SettingsForm initial={prefs} />
+      <ExportButton />
       <div className="border-t border-line pt-4 text-xs italic text-ink-soft">
         <p className="not-italic font-display text-[10px] uppercase tracking-[0.2em]">AI model</p>
         <p className="mt-1 not-italic">{model}</p>
@@ -23,7 +23,5 @@ export default async function SettingsPage() {
           All nutrition numbers in this app are AI estimates for personal awareness — not medical or dietary advice.
         </p>
       </div>
-      <LogoutButton />
-    </main>
-  );
+    </main>  );
 }

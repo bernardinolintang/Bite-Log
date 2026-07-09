@@ -1,24 +1,17 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ItemsEditor, { emptyItem } from "@/components/ItemsEditor";
 import type { FoodItem } from "@/lib/ai/schema";
 import type { Clarification } from "@/lib/ai/types";
 import { prepareImage } from "@/lib/image";
+import { loadMealType, saveMealType, type MealType } from "@/lib/meal-type-prefs";
 import { calcTotals } from "@/lib/nutrition";
+import { listenForSpeech } from "@/lib/voice-input";
 
-type MealType = "breakfast" | "lunch" | "dinner" | "snack";
 type Phase = "input" | "analyzing" | "review";
 
 const MEAL_TYPES: MealType[] = ["breakfast", "lunch", "dinner", "snack"];
-
-function defaultMealType(): MealType {
-  const h = new Date().getHours();
-  if (h < 11) return "breakfast";
-  if (h < 15) return "lunch";
-  if (h < 18) return "snack";
-  return "dinner";
-}
 
 function CameraIcon() {
   return (
@@ -42,7 +35,7 @@ function ImageIcon() {
 export default function AddMealPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>("input");
-  const [mealType, setMealType] = useState<MealType>(defaultMealType());
+  const [mealType, setMealType] = useState<MealType>("breakfast");
   const [description, setDescription] = useState("");
   const [large, setLarge] = useState<string | null>(null);
   const [thumb, setThumb] = useState<string | null>(null);
@@ -54,8 +47,32 @@ export default function AddMealPage() {
   const [isManual, setIsManual] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [listening, setListening] = useState(false);
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setMealType(loadMealType());
+  }, []);
+
+  function selectMealType(t: MealType) {
+    setMealType(t);
+    saveMealType(t);
+  }
+
+  function startVoice() {
+    setListening(true);
+    setError("");
+    const started = listenForSpeech(
+      (transcript) => setDescription((prev) => (prev ? `${prev} ${transcript}` : transcript)),
+      () => setError("Couldn't hear that — try again or type instead."),
+      () => setListening(false),
+    );
+    if (!started) {
+      setListening(false);
+      setError("Voice input isn't supported in this browser.");
+    }
+  }
 
   async function onFile(file: File | undefined) {
     if (!file) return;
@@ -136,6 +153,7 @@ export default function AddMealPage() {
     }).catch(() => null);
     setSaving(false);
     if (res?.ok) {
+      saveMealType(mealType);
       router.push("/");
       router.refresh();
     } else {
@@ -156,7 +174,7 @@ export default function AddMealPage() {
           <button
             key={t}
             type="button"
-            onClick={() => setMealType(t)}
+            onClick={() => selectMealType(t)}
             className={`flex-1 border-b-2 pb-2 pt-1 font-display text-[11px] uppercase tracking-[0.15em] ${
               mealType === t ? "border-tomato text-tomato" : "border-transparent text-ink-soft"
             }`}
@@ -200,13 +218,23 @@ export default function AddMealPage() {
             </div>
           )}
 
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="…or describe the meal (e.g. 'chicken rice with iced milo')"
-            rows={3}
-            className="w-full rounded-none border border-line bg-transparent p-3 text-sm placeholder:italic placeholder:text-ink-soft/60 focus:border-ink focus:outline-none"
-          />
+          <div className="space-y-2">
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="…or describe the meal (e.g. 'chicken rice with iced milo')"
+              rows={3}
+              className="w-full rounded-none border border-line bg-transparent p-3 text-sm placeholder:italic placeholder:text-ink-soft/60 focus:border-ink focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={startVoice}
+              disabled={listening}
+              className="w-full border border-line py-2 font-display text-[10px] uppercase tracking-[0.18em] text-ink-soft hover:border-ink hover:text-ink disabled:opacity-50"
+            >
+              {listening ? "Listening…" : "🎤 Describe by voice"}
+            </button>
+          </div>
 
           {error && <p className="text-sm italic text-tomato">{error}</p>}
 

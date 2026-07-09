@@ -38,6 +38,35 @@ export const settings = sqliteTable("settings", {
   fatTarget: real("fat_target"),
 });
 
+/** Personal food memory — nutrition values the user confirmed for a food name. */
+export const foodTemplates = sqliteTable("food_templates", {
+  id: text("id").primaryKey(),
+  foodKey: text("food_key").notNull().unique(),
+  foodName: text("food_name").notNull(),
+  quantityDesc: text("quantity_desc").notNull(),
+  grams: real("grams"),
+  calories: real("calories").notNull(),
+  proteinG: real("protein_g").notNull(),
+  carbsG: real("carbs_g").notNull(),
+  fatG: real("fat_g").notNull(),
+  fibreG: real("fibre_g"),
+  sodiumMg: real("sodium_mg"),
+  useCount: integer("use_count").notNull().default(1),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/** Quick-log templates derived from saved meals. */
+export const savedMeals = sqliteTable("saved_meals", {
+  id: text("id").primaryKey(),
+  fingerprint: text("fingerprint").notNull().unique(),
+  label: text("label").notNull(),
+  mealType: text("meal_type").notNull(),
+  thumbnail: text("thumbnail"),
+  itemsJson: text("items_json").notNull(),
+  logCount: integer("log_count").notNull().default(1),
+  lastLoggedAt: integer("last_logged_at").notNull(),
+});
+
 export const mealsRelations = relations(meals, ({ many }) => ({
   items: many(mealItems),
 }));

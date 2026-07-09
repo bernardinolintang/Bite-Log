@@ -3,6 +3,7 @@ import { z } from "zod";
 import { foodItemSchema } from "@/lib/ai/schema";
 import { foodItemToDbValues } from "@/lib/convert";
 import { dateStringFor } from "@/lib/dates";
+import { rememberMealItems, rememberSavedMeal } from "@/lib/db/memory";
 import { db } from "@/lib/db";
 import { mealItems, meals } from "@/lib/db/schema";
 
@@ -34,5 +35,7 @@ export async function POST(req: NextRequest) {
     loggedDate: dateStringFor(now),
   });
   await db.insert(mealItems).values(d.items.map((i) => foodItemToDbValues(i, id)));
+  await rememberMealItems(d.items);
+  await rememberSavedMeal(d.items, d.mealType, d.aiSummary, d.thumbnail);
   return NextResponse.json({ id });
 }

@@ -49,7 +49,11 @@ export default async function HistoryPage() {
           {days.map(([date, info]) => {
             const totals = totalsFor.get(date)!;
             return (
-              <div key={date} className="flex items-baseline justify-between border-b border-line py-3.5">
+              <Link
+                key={date}
+                href={`/history/${date}`}
+                className="flex items-baseline justify-between border-b border-line py-3.5 hover:bg-paper-deep"
+              >
                 <div>
                   <p className="font-medium">{formatDisplayDate(date)}</p>
                   <p className="text-xs italic text-ink-soft">
@@ -61,7 +65,7 @@ export default async function HistoryPage() {
                   {Math.round(totals.calories)}
                   <span className="ml-1 text-xs font-normal text-ink-soft">kcal</span>
                 </span>
-              </div>
+              </Link>
             );
           })}
         </section>

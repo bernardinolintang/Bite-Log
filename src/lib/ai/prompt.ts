@@ -6,6 +6,7 @@ Identify every distinct food and drink in the user's meal (from a photo, a text 
 Respond with ONLY a JSON object, no markdown fences, in exactly this shape:
 {
   "meal_summary": string,
+  "no_food": boolean,
   "items": [{
     "food_name": string,
     "quantity_desc": string,
@@ -24,6 +25,8 @@ Respond with ONLY a JSON object, no markdown fences, in exactly this shape:
 
 Rules:
 - "meal_summary" is one short line, e.g. "Chicken rice with iced tea".
+- "no_food" is true ONLY when there is nothing edible at all (a pet, a landscape, a screenshot, a blank wall). Then return "items": []. Never invent food to fill the response.
+- Raw ingredients, packaged food and drinks all count as food — set "no_food": false for those.
 - Numbers are for the stated portion, NOT per 100 g.
 - "confidence" is 0 to 1 per item; lower it when portions are unclear or food is partly hidden.
 - Account for hidden ingredients (cooking oil, sugar in drinks, sauces) and state them in "assumptions".

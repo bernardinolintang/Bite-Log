@@ -75,6 +75,14 @@ export const telegramChats = sqliteTable("telegram_chats", {
   linkedAt: integer("linked_at").notNull(),
 });
 
+/** Recent Telegram turns, so the assistant can follow a thread instead of answering blind. */
+export const chatMessages = sqliteTable("chat_messages", {
+  id: text("id").primaryKey(),
+  role: text("role").notNull(), // user | assistant
+  content: text("content").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
 /** One row per check-in actually sent, so a re-run of the scheduler cannot double-nag. */
 export const checkins = sqliteTable("checkins", {
   id: text("id").primaryKey(), // `${YYYY-MM-DD}:${slot}`

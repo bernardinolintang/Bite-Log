@@ -1,74 +1,111 @@
 import { groqCompleter } from "@/lib/ai/analyze";
+import type { ChatTurn } from "@/lib/db/queries";
 import type { ChatMessage } from "@/lib/ai/types";
+import type { MealType } from "@/lib/meals";
 
-export type Intent = "log_meal" | "question" | "chat";
+export type Intent = "log_meal" | "amend_date" | "converse";
 
-const INTENT_PROMPT = `You route messages sent to a personal meal-logging assistant.
-Reply with ONLY a JSON object: {"intent": "log_meal" | "question" | "chat"}
+export interface Routing {
+  intent: Intent;
+  /** 0 = today, -1 = yesterday. Applies to the meal being logged or amended. */
+  dayOffset: number;
+  /** Set only when the user names the meal explicitly ("yesterday's dinner"). */
+  mealType: MealType | null;
+}
 
-- "log_meal": the user is telling you what they ate or drank, so it can be logged.
-  Examples: "chicken rice", "I had two eggs and toast", "just a flat white", "nasi lemak for lunch".
-- "question": they are asking about their food data or nutrition.
-  Examples: "what did I eat today?", "how many calories so far?", "am I over my protein?",
-  "what did I have yesterday", "how many calories left".
-- "chat": greetings, thanks, small talk, or anything else.
+const ROUTER_PROMPT = `You route messages sent to a personal meal-logging assistant.
+Reply with ONLY a JSON object:
+{"intent": "log_meal" | "amend_date" | "converse", "day_offset": number, "meal_type": "breakfast"|"lunch"|"dinner"|"snack"|null}
+
+intent:
+- "log_meal": they are telling you what they ate or drank, so you can log it.
+  "chicken rice", "I had two eggs and toast", "just a flat white", "nasi lemak for lunch".
+- "amend_date": they are correcting the day of something ALREADY logged.
+  "that was yesterday", "I told you the sausage platter was from yesterday", "move that to Sunday".
+  Only use this when they refer back to an earlier entry rather than naming new food.
+- "converse": questions about their log or nutrition, greetings, thanks, anything else.
+  "what did I eat today?", "how many calories so far", "ok nice", "thanks", "hey".
+
+day_offset: 0 unless they say otherwise. "yesterday" or "last night" = -1.
+"the day before yesterday" = -2. Only ever 0 or negative.
+
+meal_type: only when they say it outright, otherwise null.
 
 A bare food name with no question mark is almost always "log_meal".`;
 
-const ANSWER_PROMPT = `You are a friendly, concise personal nutrition assistant in a Telegram chat.
-Answer the user's question using ONLY the meal log provided. Facts come from the log, never invented.
+const PERSONA = `You are BiteLog, a warm, concise personal nutrition assistant chatting on Telegram.
 
-- Be brief: 1-3 short sentences, or a tight list. This is a phone screen.
-- Round calories to whole numbers.
-- If the log doesn't contain the answer, say so plainly and suggest logging the meal.
-- Never comment on the user's body, weight, or discipline. No medical advice.
-- These numbers are estimates; don't over-claim precision.
-- Plain text only. No markdown, no asterisks, no headers.`;
+- Talk like a friend who happens to keep their food diary. Natural, brief, never clinical.
+- 1-3 short sentences usually. This is a phone screen, not a report.
+- Use the meal log for every factual claim. Never invent food, numbers, or days.
+- If the log doesn't cover what they asked, say so and offer to log it.
+- Numbers are estimates — don't over-claim precision. Round calories to whole numbers.
+- Never comment on their body, weight, or discipline. No medical advice, no moralising
+  about food choices. You are a record keeper, not a coach.
+- Plain text only: no markdown, no asterisks, no headings, no bullet characters.
+- Follow the conversation. If they refer to "that" or "it", look at what was just discussed.`;
 
 function extractJson(raw: string): unknown {
-  return JSON.parse(
-    raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""),
-  );
+  return JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""));
 }
 
-/** Classify a text message. Falls back to logging a meal, which is the common case. */
-export async function classifyIntent(text: string): Promise<Intent> {
+const MEAL_TYPES = new Set(["breakfast", "lunch", "dinner", "snack"]);
+
+/**
+ * Decide what the user wants. Recent turns are included so follow-ups like
+ * "that was yesterday" resolve against what was actually just logged.
+ */
+export async function routeMessage(text: string, history: ChatTurn[] = []): Promise<Routing> {
   const messages: ChatMessage[] = [
-    { role: "system", content: INTENT_PROMPT },
+    { role: "system", content: ROUTER_PROMPT },
+    ...history.slice(-6).map((t) => ({ role: t.role, content: t.content }) as ChatMessage),
     { role: "user", content: text },
   ];
   try {
-    const raw = await groqCompleter({ maxTokens: 100 })(messages);
-    const parsed = extractJson(raw) as { intent?: string };
-    if (parsed.intent === "question" || parsed.intent === "chat" || parsed.intent === "log_meal") {
-      return parsed.intent;
-    }
+    const raw = await groqCompleter({ maxTokens: 120 })(messages);
+    const p = extractJson(raw) as { intent?: string; day_offset?: unknown; meal_type?: unknown };
+    const intent: Intent =
+      p.intent === "amend_date" || p.intent === "converse" || p.intent === "log_meal"
+        ? p.intent
+        : "log_meal";
+    const rawOffset = typeof p.day_offset === "number" ? Math.round(p.day_offset) : 0;
+    return {
+      intent,
+      // Clamp: a future date is never right, and beyond a week is a misread.
+      dayOffset: Math.min(0, Math.max(-7, rawOffset)),
+      mealType:
+        typeof p.meal_type === "string" && MEAL_TYPES.has(p.meal_type)
+          ? (p.meal_type as MealType)
+          : null,
+    };
   } catch {
-    // Routing is best-effort; a failed classification shouldn't block logging.
+    // Routing is best-effort; logging is the common case, so fail toward it.
+    return { intent: "log_meal", dayOffset: 0, mealType: null };
   }
-  return "log_meal";
 }
 
-export async function answerQuestion(
-  question: string,
+/** The assistant's conversational reply — questions and small talk both land here. */
+export async function converse(
+  text: string,
   logContext: string,
+  history: ChatTurn[],
   todayDate: string,
   target: number | null,
 ): Promise<string> {
   const messages: ChatMessage[] = [
-    { role: "system", content: ANSWER_PROMPT },
+    { role: "system", content: PERSONA },
     {
-      role: "user",
+      role: "system",
       content: [
         `Today is ${todayDate}.`,
         target ? `Their daily calorie target is ${Math.round(target)} kcal.` : "No calorie target is set.",
         "",
-        "Meal log (oldest first):",
+        "Their meal log for the last 7 days (oldest first):",
         logContext,
-        "",
-        `Question: ${question}`,
       ].join("\n"),
     },
+    ...history.slice(-10).map((t) => ({ role: t.role, content: t.content }) as ChatMessage),
+    { role: "user", content: text },
   ];
-  return (await groqCompleter({ json: false, maxTokens: 500, temperature: 0.4 })(messages)).trim();
+  return (await groqCompleter({ json: false, maxTokens: 500, temperature: 0.5 })(messages)).trim();
 }

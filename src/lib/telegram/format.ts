@@ -1,5 +1,6 @@
 import type { FoodItem } from "@/lib/ai/schema";
 import { dbItemToFoodItem } from "@/lib/convert";
+import { formatDisplayDate } from "@/lib/dates";
 import type { MealWithItems, SettingsRow } from "@/lib/db/queries";
 import { calcTotals } from "@/lib/nutrition";
 import { esc } from "./api";
@@ -45,11 +46,19 @@ export function formatLoggedMeal(
 }
 
 /** The /today summary and the evening wrap-up. */
-export function formatDaySummary(meals: MealWithItems[], prefs: SettingsRow): string {
-  if (meals.length === 0) return "Nothing logged yet today. Send me a photo whenever you eat 🙂";
+export function formatDaySummary(
+  meals: MealWithItems[],
+  prefs: SettingsRow,
+  heading = "Today",
+): string {
+  if (meals.length === 0) {
+    return heading === "Today"
+      ? "Nothing logged yet today. Send me a photo whenever you eat 🙂"
+      : `Nothing logged for ${heading.toLowerCase()}.`;
+  }
   const all = meals.flatMap((m) => m.items.map(dbItemToFoodItem));
   const t = calcTotals(all);
-  const lines: string[] = ["<b>Today</b>", ""];
+  const lines: string[] = [`<b>${esc(heading)}</b>`, ""];
   // Oldest first reads like a timeline; the query returns newest first.
   for (const m of [...meals].reverse()) {
     const mt = calcTotals(m.items.map(dbItemToFoodItem));
@@ -67,6 +76,39 @@ export function formatDaySummary(meals: MealWithItems[], prefs: SettingsRow): st
         : `<b>${r(-left)} kcal</b> over ${r(prefs.calorieTarget)} — no drama, just information.`,
     );
   }
+  return lines.join("\n");
+}
+
+/** Per-day calorie totals across a date range, for the "last 7 days" button. */
+export function formatWeekSummary(
+  meals: MealWithItems[],
+  dates: string[],
+  prefs: SettingsRow,
+): string {
+  const byDate = new Map<string, MealWithItems[]>();
+  for (const m of meals) {
+    const list = byDate.get(m.loggedDate);
+    if (list) list.push(m);
+    else byDate.set(m.loggedDate, [m]);
+  }
+  const logged = dates.filter((d) => byDate.has(d));
+  if (logged.length === 0) return "Nothing logged in the last 7 days.";
+
+  const lines: string[] = ["<b>Last 7 days</b>", ""];
+  let sum = 0;
+  for (const d of dates) {
+    const dayMeals = byDate.get(d);
+    if (!dayMeals) {
+      lines.push(`${formatDisplayDate(d)} — <i>nothing logged</i>`);
+      continue;
+    }
+    const kcal = calcTotals(dayMeals.flatMap((m) => m.items.map(dbItemToFoodItem))).calories;
+    sum += kcal;
+    const flag = prefs.calorieTarget && kcal > prefs.calorieTarget ? " ▲" : "";
+    lines.push(`${formatDisplayDate(d)} — <b>${r(kcal)}</b> kcal${flag}`);
+  }
+  lines.push("");
+  lines.push(`Average on days you logged: <b>${r(sum / logged.length)}</b> kcal`);
   return lines.join("\n");
 }
 

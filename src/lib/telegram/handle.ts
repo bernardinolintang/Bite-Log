@@ -2,32 +2,40 @@ import { analyzeMeal, RateLimitError } from "@/lib/ai/analyze";
 import { applyFoodMemory } from "@/lib/food-memory";
 import { getAllFoodTemplates } from "@/lib/db/memory";
 import {
+  appendTurn,
+  type ChatTurn,
   claimChat,
+  clearTurns,
   deleteMeal,
   getLinkedChat,
   getMealsByDate,
   getMealsForDates,
   getRecentMeals,
+  getRecentTurns,
   getSettings,
+  pruneTurns,
+  setMealDate,
   unlinkChat,
 } from "@/lib/db/queries";
 import { dbItemToFoodItem } from "@/lib/convert";
-import { lastNDates, todayString } from "@/lib/dates";
-import { saveMeal } from "@/lib/meals";
+import { dateStringFor, formatDisplayDate, lastNDates, todayString } from "@/lib/dates";
+import { saveMeal, type MealType } from "@/lib/meals";
 import { calcTotals } from "@/lib/nutrition";
-import { answerQuestion, classifyIntent } from "./agent";
+import { converse, routeMessage } from "./agent";
 import {
   answerCallbackQuery,
   editMessageText,
   esc,
   fetchPhotoDataUrl,
+  type InlineButton,
   sendChatAction,
   sendMessage,
 } from "./api";
-import { formatDaySummary, formatLoggedMeal, mealsAsContext } from "./format";
+import { formatDaySummary, formatLoggedMeal, formatWeekSummary, mealsAsContext } from "./format";
 import { mealTypeForTime } from "./schedule";
 
 const TZ = process.env.APP_TIMEZONE || "Asia/Singapore";
+const DAY_MS = 86_400_000;
 
 /* Telegram's update shape, narrowed to the parts this bot uses. */
 interface TgUser {
@@ -57,18 +65,66 @@ const HELP = [
   "",
   "📸 <b>Send a photo of your meal</b> — I'll break down the calories and macros and log it.",
   "✍️ <b>Or just type it</b> — \"chicken rice and iced milo\".",
-  "❓ <b>Ask me anything</b> — \"what did I eat today?\", \"how many calories so far?\", \"how much protein left?\"",
+  "🕐 <b>Back-date it</b> — \"that was yesterday's dinner\" and I'll move it.",
+  "❓ <b>Just talk to me</b> — \"what did I eat today?\", \"how am I doing on protein?\"",
   "",
+  "/menu — buttons for the common stuff",
   "/today — today's log and totals",
   "/undo — remove the last thing I logged",
-  "/help — this message",
+  "/reset — forget our conversation so far",
   "",
-  "I'll also check in around breakfast, lunch and dinner. If you've already logged that meal, I'll stay quiet.",
+  "I check in around breakfast, lunch and dinner. If you've already logged that meal, I stay quiet.",
 ].join("\n");
+
+const MENU_BUTTONS: InlineButton[][] = [
+  [
+    { text: "📊 Today", callback_data: "day:0" },
+    { text: "📅 Yesterday", callback_data: "day:-1" },
+  ],
+  [
+    { text: "📈 Last 7 days", callback_data: "week" },
+    { text: "🗑 Undo last", callback_data: "undo" },
+  ],
+];
+
+/** Shown under a freshly logged meal. */
+function loggedButtons(mealId: string): InlineButton[][] {
+  return [
+    [
+      { text: "🗑 Undo", callback_data: `del:${mealId}` },
+      { text: "📊 Today", callback_data: "day:0" },
+    ],
+  ];
+}
+
+async function reply(chatId: string, text: string, buttons?: InlineButton[][]): Promise<void> {
+  await sendMessage(chatId, text, buttons);
+  await appendTurn("assistant", stripHtml(text));
+}
+
+/** The model wrote plain text; conversation memory should store it that way too. */
+function stripHtml(s: string): string {
+  return s
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
 
 async function dayCalories(date: string): Promise<number> {
   const meals = await getMealsByDate(date);
   return calcTotals(meals.flatMap((m) => m.items.map(dbItemToFoodItem))).calories;
+}
+
+function dateForOffset(offset: number): { at: number; date: string } {
+  const at = Date.now() + offset * DAY_MS;
+  return { at, date: dateStringFor(at, TZ) };
+}
+
+function dayLabel(offset: number, date: string): string {
+  if (offset === 0) return "Today";
+  if (offset === -1) return "Yesterday";
+  return formatDisplayDate(date);
 }
 
 /** Telegram sends several sizes; take the largest under ~1.2MB to bound token cost. */
@@ -80,9 +136,17 @@ function pickPhoto(photos: { file_id: string; file_size?: number; width: number 
 
 async function logMeal(
   chatId: string,
-  opts: { imageDataUrl?: string; description?: string },
+  opts: {
+    imageDataUrl?: string;
+    description?: string;
+    dayOffset?: number;
+    mealType?: MealType | null;
+  },
 ): Promise<void> {
-  const mealType = mealTypeForTime(Date.now(), TZ);
+  const offset = opts.dayOffset ?? 0;
+  const { at, date } = dateForOffset(offset);
+  const mealType = opts.mealType ?? mealTypeForTime(at, TZ);
+
   let analysis;
   try {
     analysis = await analyzeMeal({
@@ -92,16 +156,16 @@ async function logMeal(
     });
   } catch (err) {
     if (err instanceof RateLimitError) {
-      await sendMessage(chatId, "I'm being rate-limited right now — give me a minute and send that again 🙏");
+      await reply(chatId, "I'm being rate-limited right now — give me a minute and send that again 🙏");
       return;
     }
     console.error("telegram analyze failed:", err);
-    await sendMessage(chatId, "I couldn't read that one. Try another photo, or describe it in words?");
+    await reply(chatId, "I couldn't read that one. Try another photo, or describe it in words?");
     return;
   }
 
   if (analysis.no_food || analysis.items.length === 0) {
-    await sendMessage(
+    await reply(
       chatId,
       opts.imageDataUrl
         ? "I don't see any food in that photo 🤔 Try another angle, or tell me what it was."
@@ -117,39 +181,92 @@ async function logMeal(
     description: opts.description ?? null,
     aiSummary: analysis.meal_summary || null,
     items,
+    loggedAt: at,
   });
 
   const prefs = await getSettings();
-  const text = formatLoggedMeal(
+  let text = formatLoggedMeal(
     analysis.meal_summary,
     mealType,
     items,
-    await dayCalories(todayString(TZ)),
+    await dayCalories(date),
     prefs.calorieTarget,
   );
-  await sendMessage(chatId, text, [[{ text: "🗑 Undo", callback_data: `del:${id}` }]]);
+  if (offset !== 0) {
+    text = `${text}\n\n<i>Logged under ${dayLabel(offset, date).toLowerCase()}, ${formatDisplayDate(date)}.</i>`;
+  }
+  await reply(chatId, text, loggedButtons(id));
 }
 
-async function handleQuestion(chatId: string, question: string): Promise<void> {
-  // A week of context covers "yesterday", "this week" and "so far today".
-  const meals = await getMealsForDates(lastNDates(7, TZ));
-  const prefs = await getSettings();
+/** "That was yesterday" — move the most recent meal to another day. */
+async function amendDate(chatId: string, dayOffset: number): Promise<void> {
+  const [last] = await getRecentMeals(1);
+  if (!last) {
+    await reply(chatId, "There's nothing logged yet for me to move.");
+    return;
+  }
+  if (dayOffset === 0) {
+    await reply(chatId, "Which day should I move it to? Say something like \"that was yesterday\".");
+    return;
+  }
+  const { at, date } = dateForOffset(dayOffset);
+  await setMealDate(last.id, at, date);
+  const label = last.aiSummary || last.description || last.mealType;
+  await reply(
+    chatId,
+    `Got it — moved <b>${esc(label)}</b> to ${formatDisplayDate(date)}. Today's total is back to <b>${Math.round(await dayCalories(todayString(TZ)))}</b> kcal.`,
+  );
+}
+
+/** `history` excludes the current message — it is passed separately as the final turn. */
+async function handleConversation(
+  chatId: string,
+  text: string,
+  history: ChatTurn[],
+): Promise<void> {
+  const [meals, prefs] = await Promise.all([
+    getMealsForDates(lastNDates(7, TZ)),
+    getSettings(),
+  ]);
   try {
-    const answer = await answerQuestion(
-      question,
+    const answer = await converse(
+      text,
       mealsAsContext(meals),
+      history,
       todayString(TZ),
       prefs.calorieTarget,
     );
-    await sendMessage(chatId, esc(answer) || "I'm not sure — try asking another way?");
+    await reply(chatId, esc(answer) || "I'm not sure how to answer that — try /menu?");
   } catch (err) {
     if (err instanceof RateLimitError) {
-      await sendMessage(chatId, "Rate-limited for a moment — ask me again shortly 🙏");
+      await reply(chatId, "Rate-limited for a moment — ask me again shortly 🙏");
       return;
     }
-    console.error("telegram question failed:", err);
-    await sendMessage(chatId, "I couldn't work that one out. Try /today for the summary?");
+    console.error("telegram converse failed:", err);
+    await reply(chatId, "I couldn't work that one out. /menu has the summaries.");
   }
+}
+
+async function sendDay(chatId: string, offset: number): Promise<void> {
+  const { date } = dateForOffset(offset);
+  const [meals, prefs] = await Promise.all([getMealsByDate(date), getSettings()]);
+  await reply(chatId, formatDaySummary(meals, prefs, dayLabel(offset, date)));
+}
+
+async function sendWeek(chatId: string): Promise<void> {
+  const dates = lastNDates(7, TZ);
+  const [meals, prefs] = await Promise.all([getMealsForDates(dates), getSettings()]);
+  await reply(chatId, formatWeekSummary(meals, dates, prefs));
+}
+
+async function undoLast(chatId: string): Promise<void> {
+  const [last] = await getRecentMeals(1);
+  if (!last) {
+    await reply(chatId, "Nothing to undo — your log is empty.");
+    return;
+  }
+  await deleteMeal(last.id);
+  await reply(chatId, `Removed <b>${esc(last.aiSummary || last.description || last.mealType)}</b>.`);
 }
 
 async function handleCommand(chatId: string, cmd: string, username: string | null): Promise<boolean> {
@@ -160,33 +277,56 @@ async function handleCommand(chatId: string, cmd: string, username: string | nul
         await sendMessage(chatId, "This is a private bot 🙈");
         return true;
       }
-      await sendMessage(chatId, `Hey${username ? ` ${esc(username)}` : ""}! I'm your food journal 🥗\n\n${HELP}`);
+      await reply(chatId, `Hey${username ? ` ${esc(username)}` : ""}! I'm your food journal 🥗\n\n${HELP}`, MENU_BUTTONS);
       return true;
     }
     case "/help":
-      await sendMessage(chatId, HELP);
+      await reply(chatId, HELP, MENU_BUTTONS);
       return true;
-    case "/today": {
-      const [meals, prefs] = await Promise.all([getMealsByDate(todayString(TZ)), getSettings()]);
-      await sendMessage(chatId, formatDaySummary(meals, prefs));
+    case "/menu":
+      await reply(chatId, "What would you like to see?", MENU_BUTTONS);
       return true;
-    }
-    case "/undo": {
-      const [last] = await getRecentMeals(1);
-      if (!last) {
-        await sendMessage(chatId, "Nothing to undo — your log is empty.");
-        return true;
-      }
-      await deleteMeal(last.id);
-      await sendMessage(chatId, `Removed <b>${esc(last.aiSummary || last.description || last.mealType)}</b>.`);
+    case "/today":
+      await sendDay(chatId, 0);
       return true;
-    }
+    case "/yesterday":
+      await sendDay(chatId, -1);
+      return true;
+    case "/week":
+      await sendWeek(chatId);
+      return true;
+    case "/undo":
+      await undoLast(chatId);
+      return true;
+    case "/reset":
+      await clearTurns();
+      await sendMessage(chatId, "Fresh start — I've forgotten our conversation. Your meal log is untouched.");
+      return true;
     case "/unlink":
       await unlinkChat();
       await sendMessage(chatId, "Unlinked. Send /start to link this chat again.");
       return true;
     default:
       return false;
+  }
+}
+
+async function handleCallback(chatId: string, data: string, messageId?: number): Promise<void> {
+  if (data.startsWith("del:")) {
+    await deleteMeal(data.slice(4));
+    if (messageId) await editMessageText(chatId, messageId, "🗑 <i>Removed from your log.</i>");
+    return;
+  }
+  if (data.startsWith("day:")) {
+    await sendDay(chatId, Number(data.slice(4)) || 0);
+    return;
+  }
+  if (data === "week") {
+    await sendWeek(chatId);
+    return;
+  }
+  if (data === "undo") {
+    await undoLast(chatId);
   }
 }
 
@@ -202,13 +342,8 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
       await answerCallbackQuery(q.id);
       return;
     }
-    if (q.data?.startsWith("del:")) {
-      await deleteMeal(q.data.slice(4));
-      await answerCallbackQuery(q.id, "Removed");
-      if (q.message) await editMessageText(chatId, q.message.message_id, "🗑 <i>Removed from your log.</i>");
-      return;
-    }
     await answerCallbackQuery(q.id);
+    if (q.data) await handleCallback(chatId, q.data, q.message?.message_id);
     return;
   }
 
@@ -235,28 +370,44 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
 
   if (msg.photo?.length) {
     await sendChatAction(chatId);
+    // The caption can carry both the food and when it was eaten.
+    const routing = text ? await routeMessage(text, await getRecentTurns()) : null;
+    await appendTurn("user", text ? `[photo] ${text}` : "[photo]");
     try {
       const imageDataUrl = await fetchPhotoDataUrl(pickPhoto(msg.photo));
-      // A caption is extra context for the same meal, not a separate message.
-      await logMeal(chatId, { imageDataUrl, description: text || undefined });
+      await logMeal(chatId, {
+        imageDataUrl,
+        description: text || undefined,
+        dayOffset: routing?.dayOffset ?? 0,
+        mealType: routing?.mealType ?? null,
+      });
     } catch (err) {
       console.error("telegram photo failed:", err);
-      await sendMessage(chatId, "I couldn't download that photo — mind sending it again?");
+      await reply(chatId, "I couldn't download that photo — mind sending it again?");
     }
+    await pruneTurns();
     return;
   }
 
   if (!text) return;
 
   await sendChatAction(chatId);
-  const intent = await classifyIntent(text);
-  if (intent === "question") {
-    await handleQuestion(chatId, text);
-  } else if (intent === "chat") {
-    await sendMessage(chatId, "🙂 Send me a meal photo, describe what you ate, or ask about your day.");
+  const history = await getRecentTurns();
+  await appendTurn("user", text);
+  const routing = await routeMessage(text, history);
+
+  if (routing.intent === "log_meal") {
+    await logMeal(chatId, {
+      description: text,
+      dayOffset: routing.dayOffset,
+      mealType: routing.mealType,
+    });
+  } else if (routing.intent === "amend_date") {
+    await amendDate(chatId, routing.dayOffset);
   } else {
-    await logMeal(chatId, { description: text });
+    await handleConversation(chatId, text, history);
   }
+  await pruneTurns();
 }
 
 async function isOwner(chatId: string): Promise<boolean> {

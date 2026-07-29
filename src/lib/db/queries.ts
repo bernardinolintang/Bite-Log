@@ -1,6 +1,7 @@
-import { desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray, lt } from "drizzle-orm";
 import { db } from "./index";
 import {
+  chatMessages,
   checkins,
   mealItems,
   meals,
@@ -95,6 +96,52 @@ export async function claimChat(chatId: string, username: string | null): Promis
 
 export async function unlinkChat(): Promise<void> {
   await db.delete(telegramChats);
+}
+
+/* ---------- Conversation memory ---------- */
+
+export type ChatTurn = { role: "user" | "assistant"; content: string };
+
+const HISTORY_LIMIT = 16;
+
+/** Recent turns, oldest first — the order a chat model expects. */
+export async function getRecentTurns(limit = HISTORY_LIMIT): Promise<ChatTurn[]> {
+  const rows = await db.query.chatMessages.findMany({
+    orderBy: [desc(chatMessages.createdAt)],
+    limit,
+  });
+  return rows.reverse().map((r) => ({ role: r.role as "user" | "assistant", content: r.content }));
+}
+
+export async function appendTurn(role: "user" | "assistant", content: string): Promise<void> {
+  if (!content.trim()) return;
+  await db.insert(chatMessages).values({
+    id: crypto.randomUUID(),
+    role,
+    // Long messages are summaries the model doesn't need in full.
+    content: content.slice(0, 2000),
+    createdAt: Date.now(),
+  });
+}
+
+/** Drop anything older than the newest `keep` turns so the table can't grow forever. */
+export async function pruneTurns(keep = 40): Promise<void> {
+  const rows = await db.query.chatMessages.findMany({
+    orderBy: [desc(chatMessages.createdAt)],
+    limit: keep,
+  });
+  const oldest = rows[rows.length - 1];
+  if (rows.length < keep || !oldest) return;
+  await db.delete(chatMessages).where(lt(chatMessages.createdAt, oldest.createdAt));
+}
+
+export async function clearTurns(): Promise<void> {
+  await db.delete(chatMessages);
+}
+
+/** Move an already-logged meal to a different day. */
+export async function setMealDate(id: string, loggedAt: number, loggedDate: string): Promise<void> {
+  await db.update(meals).set({ loggedAt, loggedDate }).where(eq(meals.id, id));
 }
 
 /**

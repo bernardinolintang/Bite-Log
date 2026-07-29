@@ -113,6 +113,7 @@ beforeAll(async () => {
       activity_level TEXT, target_deficit REAL, updated_at INTEGER NOT NULL)`,
     `CREATE TABLE activities (id TEXT PRIMARY KEY, source TEXT NOT NULL, external_id TEXT UNIQUE,
       description TEXT NOT NULL, calories REAL NOT NULL, logged_at INTEGER NOT NULL, logged_date TEXT NOT NULL)`,
+    `CREATE TABLE bot_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
   ]);
   ({ handleUpdate } = await import("@/lib/telegram/handle"));
   ({ getRecentMeals } = await import("@/lib/db/queries"));
@@ -128,11 +129,13 @@ beforeEach(() => {
 });
 
 describe("telegram bot flow", () => {
-  it("links the first chat that sends /start", async () => {
+  it("links the first chat that sends /start and nudges profile setup", async () => {
     await handleUpdate(textUpdate(OWNER, "/start"));
-    expect(sent).toHaveLength(1);
     expect(sent[0].chatId).toBe(OWNER);
     expect(sent[0].text).toContain("food journal");
+    // No stats yet, so it offers to collect them.
+    expect(JSON.stringify(sent[0].buttons)).toContain("setup:start");
+    expect(sent.at(-1)!.text).toContain("maintenance calories");
   });
 
   it("ignores everyone else once linked", async () => {
@@ -349,6 +352,79 @@ describe("telegram bot flow", () => {
     expect(sent[0].text).toContain("Last 7 days");
     expect(sent[0].text).toMatch(/P \d+g · C \d+g · F \d+g/);
     expect(sent[0].text).toContain("Daily average");
+  });
+
+  it("walks through guided profile setup and ends with maintenance", async () => {
+    // Wipe the profile so the flow starts from the top.
+    const { createClient } = await import("@libsql/client");
+    const c = createClient({ url: `file:${DB_FILE}` });
+    await c.execute("DELETE FROM profile");
+    await c.execute("DELETE FROM bot_state");
+
+    sent.length = 0;
+    await handleUpdate(textUpdate(OWNER, "/profile"));
+    expect(sent.at(-1)!.text).toContain("what should I use");
+    expect(JSON.stringify(sent.at(-1)!.buttons)).toContain("setup:sex:male");
+
+    sent.length = 0;
+    await handleUpdate({
+      callback_query: { id: "s1", data: "setup:sex:male", message: { message_id: 1, chat: { id: OWNER } } },
+    });
+    expect(sent.at(-1)!.text).toContain("How old are you");
+
+    // Typed answers must not reach the food model.
+    sent.length = 0;
+    await handleUpdate(textUpdate(OWNER, "27"));
+    expect(analyzeMeal).not.toHaveBeenCalled();
+    expect(sent.at(-1)!.text).toContain("height");
+
+    sent.length = 0;
+    await handleUpdate(textUpdate(OWNER, "178cm"));
+    expect(sent.at(-1)!.text).toContain("weight");
+
+    sent.length = 0;
+    await handleUpdate(textUpdate(OWNER, "72 kg"));
+    expect(sent.at(-1)!.text).toContain("active");
+
+    sent.length = 0;
+    await handleUpdate({
+      callback_query: { id: "s2", data: "setup:activity:light", message: { message_id: 1, chat: { id: OWNER } } },
+    });
+    expect(sent.at(-1)!.text).toContain("deficit");
+
+    sent.length = 0;
+    await handleUpdate({
+      callback_query: { id: "s3", data: "setup:target:500", message: { message_id: 1, chat: { id: OWNER } } },
+    });
+    const done = sent.at(-1)!.text;
+    expect(done).toContain("All set");
+    expect(done).toContain("Maintenance");
+    expect(done).toMatch(/2\d{3}/);
+  });
+
+  it("re-asks when a setup answer is an implausible number", async () => {
+    const { createClient } = await import("@libsql/client");
+    const c = createClient({ url: `file:${DB_FILE}` });
+    await c.execute("DELETE FROM bot_state");
+    await c.execute("INSERT INTO bot_state (key, value, updated_at) VALUES ('awaiting_profile_step','height',0)");
+
+    sent.length = 0;
+    await handleUpdate(textUpdate(OWNER, "900"));
+    expect(sent.at(-1)!.text).toContain("doesn't look right");
+    expect(analyzeMeal).not.toHaveBeenCalled();
+  });
+
+  it("lets a non-answer fall through so the user is never stuck", async () => {
+    const { createClient } = await import("@libsql/client");
+    const c = createClient({ url: `file:${DB_FILE}` });
+    await c.execute("DELETE FROM bot_state");
+    await c.execute("INSERT INTO bot_state (key, value, updated_at) VALUES ('awaiting_profile_step','height',0)");
+
+    sent.length = 0;
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue(toastAnalysis);
+    await handleUpdate(textUpdate(OWNER, "chicken rice"));
+    expect(analyzeMeal).toHaveBeenCalledOnce();
   });
 
   it("clears conversation memory with /reset but keeps the meal log", async () => {

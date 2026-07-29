@@ -6,6 +6,7 @@ import {
   appendTurn,
   type ChatTurn,
   claimChat,
+  clearState,
   clearTurns,
   deleteMeal,
   getActivitiesForDates,
@@ -16,8 +17,10 @@ import {
   getRecentMeals,
   getRecentTurns,
   getSettings,
+  getState,
   pruneTurns,
   setMealDate,
+  setState,
   unlinkChat,
   updateProfile,
 } from "@/lib/db/queries";
@@ -45,6 +48,14 @@ import {
   mealsAsContext,
 } from "./format";
 import { mealTypeForTime } from "./schedule";
+import {
+  nextStep,
+  parseNumber,
+  stepAfter,
+  stepById,
+  valueForField,
+  type Step,
+} from "./setup-flow";
 
 const TZ = process.env.APP_TIMEZONE || "Asia/Singapore";
 const DAY_MS = 86_400_000;
@@ -382,12 +393,103 @@ async function balanceText(offset: number): Promise<string> {
 }
 
 async function sendBalance(chatId: string, offset = 0): Promise<void> {
-  await reply(chatId, await balanceText(offset));
+  const prof = await getProfile();
+  // Without stats there's no maintenance figure, so offer the quickest way to fix that.
+  const buttons = maintenance(prof as never)
+    ? undefined
+    : [[{ text: "👤 Set up my stats", callback_data: "setup:start" }]];
+  await reply(chatId, await balanceText(offset), buttons);
+}
+
+/** Which profile field the next plain message should answer. */
+const AWAITING = "awaiting_profile_step";
+
+async function askStep(chatId: string, step: Step): Promise<void> {
+  await setState(AWAITING, step.id);
+  await reply(chatId, step.question, step.buttons);
+}
+
+/** Ask the next unanswered question, or finish and show the result. */
+async function advanceSetup(chatId: string, afterId?: Step["id"]): Promise<void> {
+  const prof = await getProfile();
+  const step = afterId ? stepAfter(afterId, prof) : nextStep(prof);
+  if (step) {
+    await askStep(chatId, step);
+    return;
+  }
+  await clearState(AWAITING);
+  const maint = maintenance(prof as never);
+  await reply(
+    chatId,
+    maint
+      ? `All set 🎉\n\n${formatProfile(prof, maint)}\n\nNow log a workout like "burnt 500 on an incline walk" and /balance will show your deficit.`
+      : formatProfile(prof, null),
+    MENU_BUTTONS,
+  );
 }
 
 async function sendProfile(chatId: string): Promise<void> {
   const prof = await getProfile();
-  await reply(chatId, formatProfile(prof, maintenance(prof as never)));
+  const maint = maintenance(prof as never);
+  if (!maint) {
+    // Nothing useful to show yet — just start asking.
+    await reply(chatId, "Let's work out your maintenance calories — six quick questions 👇");
+    await advanceSetup(chatId);
+    return;
+  }
+  await reply(chatId, formatProfile(prof, maint), [
+    [{ text: "✏️ Update stats", callback_data: "setup:start" }],
+  ]);
+}
+
+/**
+ * A reply to a setup question. Returns false when it isn't one, so the message
+ * falls through to normal routing — a user who ignores the question isn't stuck.
+ */
+async function handleSetupReply(chatId: string, text: string): Promise<boolean> {
+  const pending = await getState(AWAITING);
+  if (!pending) return false;
+  const step = stepById(pending);
+  if (!step || !step.range) return false;
+
+  const n = parseNumber(text, step.range);
+  if (n === null) {
+    // Could be a number they fat-fingered, or they've moved on to something else.
+    if (/\d/.test(text)) {
+      await reply(chatId, `That doesn't look right — ${step.question}`);
+      return true;
+    }
+    await clearState(AWAITING);
+    return false;
+  }
+  await updateProfile({ [step.field]: valueForField(step, n) } as never);
+  await advanceSetup(chatId, step.id);
+  return true;
+}
+
+/** Button answers: setup:start, or setup:<field>:<value>. */
+async function handleSetupCallback(chatId: string, data: string): Promise<void> {
+  const [, field, value] = data.split(":");
+  if (field === "start") {
+    await reply(chatId, "Let's do it — six quick questions 👇");
+    await advanceSetup(chatId);
+    return;
+  }
+  if (field === "sex" && (value === "male" || value === "female")) {
+    await updateProfile({ sex: value });
+    await advanceSetup(chatId, "sex");
+    return;
+  }
+  if (field === "activity") {
+    await updateProfile({ activityLevel: value });
+    await advanceSetup(chatId, "activity");
+    return;
+  }
+  if (field === "target") {
+    // "Skip" sends 0, which means no target rather than a zero-calorie one.
+    await updateProfile({ targetDeficit: Number(value) || null });
+    await advanceSetup(chatId, "target");
+  }
 }
 
 async function undoLast(chatId: string): Promise<void> {
@@ -408,7 +510,21 @@ async function handleCommand(chatId: string, cmd: string, username: string | nul
         await sendMessage(chatId, "This is a private bot 🙈");
         return true;
       }
-      await reply(chatId, `Hey${username ? ` ${esc(username)}` : ""}! I'm your food journal 🥗\n\n${HELP}`, MENU_BUTTONS);
+      const prof = await getProfile();
+      const needsSetup = !maintenance(prof as never);
+      await reply(
+        chatId,
+        `Hey${username ? ` ${esc(username)}` : ""}! I'm your food journal 🥗\n\n${HELP}`,
+        needsSetup
+          ? [[{ text: "👤 Set up my stats first", callback_data: "setup:start" }], ...MENU_BUTTONS]
+          : MENU_BUTTONS,
+      );
+      if (needsSetup) {
+        await reply(
+          chatId,
+          "To track a deficit I need your maintenance calories. Tap the button above, or just tell me: \"male, 27, 178cm, 72kg, lightly active\".",
+        );
+      }
       return true;
     }
     case "/help":
@@ -450,6 +566,10 @@ async function handleCommand(chatId: string, cmd: string, username: string | nul
 }
 
 async function handleCallback(chatId: string, data: string, messageId?: number): Promise<void> {
+  if (data.startsWith("setup:")) {
+    await handleSetupCallback(chatId, data);
+    return;
+  }
   if (data.startsWith("del:")) {
     await deleteMeal(data.slice(4));
     if (messageId) await editMessageText(chatId, messageId, "🗑 <i>Removed from your log.</i>");
@@ -536,6 +656,13 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
   }
 
   if (!text) return;
+
+  // A pending setup question owns the next message — answering "72" shouldn't be
+  // sent to the food model.
+  if (await handleSetupReply(chatId, text)) {
+    await appendTurn("user", text);
+    return;
+  }
 
   await sendChatAction(chatId);
   const history = await getRecentTurns();

@@ -75,6 +75,13 @@ export const telegramChats = sqliteTable("telegram_chats", {
   linkedAt: integer("linked_at").notNull(),
 });
 
+/** Small key/value scratchpad — currently just "which profile field am I waiting for". */
+export const botState = sqliteTable("bot_state", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
 /** Body stats used to estimate maintenance calories. Single row, id 1. */
 export const profile = sqliteTable("profile", {
   id: integer("id").primaryKey(), // always 1

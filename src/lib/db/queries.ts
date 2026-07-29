@@ -2,6 +2,7 @@ import { desc, eq, inArray, lt } from "drizzle-orm";
 import { db } from "./index";
 import {
   activities,
+  botState,
   chatMessages,
   checkins,
   mealItems,
@@ -98,6 +99,22 @@ export async function claimChat(chatId: string, username: string | null): Promis
 
 export async function unlinkChat(): Promise<void> {
   await db.delete(telegramChats);
+}
+
+/* ---------- Bot state ---------- */
+
+export async function getState(key: string): Promise<string | null> {
+  const row = await db.query.botState.findFirst({ where: eq(botState.key, key) });
+  return row?.value ?? null;
+}
+
+export async function setState(key: string, value: string): Promise<void> {
+  const row = { key, value, updatedAt: Date.now() };
+  await db.insert(botState).values(row).onConflictDoUpdate({ target: botState.key, set: row });
+}
+
+export async function clearState(key: string): Promise<void> {
+  await db.delete(botState).where(eq(botState.key, key));
 }
 
 /* ---------- Profile & activities ---------- */

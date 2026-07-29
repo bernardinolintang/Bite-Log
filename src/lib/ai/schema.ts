@@ -16,14 +16,21 @@ export const foodItemSchema = z.object({
   assumptions: z.array(z.string()).default([]),
 });
 
-export const analysisSchema = z.object({
-  meal_summary: z.string().default(""),
-  items: z.array(foodItemSchema).min(1),
-  clarification_questions: z
-    .array(z.string())
-    .default([])
-    .transform((qs) => qs.slice(0, 3)),
-});
+export const analysisSchema = z
+  .object({
+    meal_summary: z.string().default(""),
+    /** Set when the photo or description contains nothing edible — items is then empty. */
+    no_food: z.boolean().default(false),
+    items: z.array(foodItemSchema).default([]),
+    clarification_questions: z
+      .array(z.string())
+      .default([])
+      .transform((qs) => qs.slice(0, 3)),
+  })
+  .refine((a) => a.no_food || a.items.length > 0, {
+    message: "items must not be empty unless no_food is true",
+    path: ["items"],
+  });
 
 export type FoodItem = z.infer<typeof foodItemSchema>;
 export type Analysis = z.infer<typeof analysisSchema>;

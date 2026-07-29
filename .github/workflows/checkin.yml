@@ -1,0 +1,30 @@
+name: Meal check-ins
+
+# Times are UTC. These map to Asia/Singapore (UTC+8), matching SLOTS in
+# src/lib/telegram/schedule.ts. GitHub can fire a scheduled job late, which is why
+# the endpoint accepts a slot for ~100 minutes after its time.
+#
+# Needs two repository secrets (Settings → Secrets and variables → Actions):
+#   APP_URL      https://your-app.vercel.app
+#   CRON_SECRET  the same value as the CRON_SECRET env var on Vercel
+on:
+  schedule:
+    - cron: "0 1 * * *" # 09:00 SGT — breakfast
+    - cron: "30 4 * * *" # 12:30 SGT — lunch
+    - cron: "0 11 * * *" # 19:00 SGT — dinner
+    - cron: "30 13 * * *" # 21:30 SGT — daily wrap-up
+  workflow_dispatch: # lets you fire one by hand to test
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger check-in
+        run: |
+          code=$(curl -sS -o /tmp/out.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/telegram/checkin")
+          echo "HTTP $code"
+          cat /tmp/out.json
+          echo
+          test "$code" = "200"

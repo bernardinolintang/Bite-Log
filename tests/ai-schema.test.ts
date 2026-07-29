@@ -52,6 +52,16 @@ describe("analysisSchema", () => {
     expect(analysisSchema.safeParse({ meal_summary: "x", items: [] }).success).toBe(false);
   });
 
+  it("accepts an empty items array when no_food is set", () => {
+    const parsed = analysisSchema.parse({ meal_summary: "A dog", no_food: true, items: [] });
+    expect(parsed.no_food).toBe(true);
+    expect(parsed.items).toEqual([]);
+  });
+
+  it("defaults no_food to false", () => {
+    expect(analysisSchema.parse({ meal_summary: "x", items: [validItem] }).no_food).toBe(false);
+  });
+
   it("rejects out-of-range confidence", () => {
     const bad = { ...validItem, confidence: 1.5 };
     expect(analysisSchema.safeParse({ meal_summary: "x", items: [bad] }).success).toBe(false);

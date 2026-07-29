@@ -7,7 +7,20 @@ All numbers are estimates for awareness — not medical advice.
 ## Stack
 
 Next.js (App Router) · Tailwind CSS · Drizzle ORM + libSQL (local file in dev, Turso in prod) ·
-Groq API (OpenAI-compatible, Llama 4 vision) · Zod · Vitest
+Groq API (OpenAI-compatible vision model) · Zod · Vitest
+
+## The AI model
+
+`GROQ_MODEL` **must name a model that accepts image input** — check the `input_modalities`
+field at https://console.groq.com/docs/models. Groq retires models regularly; when photo
+analysis starts failing with a 404, this is why. Pick a current vision model and update
+`GROQ_MODEL` (the default lives in `DEFAULT_GROQ_MODEL` in `src/lib/ai/analyze.ts`).
+
+Reasoning is explicitly disabled on the request. These models otherwise spend their token
+budget "thinking", which truncates the JSON reply and makes a photo take ~35s instead of ~2s.
+
+Groq's free tier allows 8,000 tokens/minute and a photo costs ~2,000, so roughly four photo
+analyses per minute. Past that the app shows a "wait about a minute" message.
 
 ## Local setup
 
@@ -36,10 +49,68 @@ Vercel version has HTTPS and always works).
    then restore `DATABASE_URL=file:local.db` for local dev.
 4. Import the repo at https://vercel.com/new and set env vars:
    `GROQ_API_KEY`, `GROQ_MODEL`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `APP_TIMEZONE`
+   (plus the Telegram ones below, if you want the bot)
 5. Deploy. On your phone, open the URL and "Add to Home Screen" to install it like an app.
 
 If the deployment URL is public, anyone who finds it can use the app. For a personal deployment,
 consider keeping the Vercel URL private or enabling [Vercel Deployment Protection](https://vercel.com/docs/security/deployment-protection).
+
+> **Note:** Deployment Protection also blocks Telegram's webhook calls. If you turn it on,
+> add `/api/telegram/*` as a public path, or the bot will go silent.
+
+## Telegram bot
+
+The bot is a nutrition assistant in your DMs: send a meal photo and it logs the breakdown,
+ask it questions about your day, and it checks in around mealtimes. It writes to the same
+database as the web app, so both stay in sync.
+
+### Setup
+
+1. **Create the bot.** In Telegram, message [@BotFather](https://t.me/BotFather) → `/newbot`
+   → pick a display name and a username ending in `bot`. He replies with a token.
+2. **Paste the token** into `.env` as `TELEGRAM_BOT_TOKEN`, and set `PUBLIC_URL` to your
+   deployed https URL. `TELEGRAM_WEBHOOK_SECRET` and `CRON_SECRET` are already filled in.
+3. **Add all four** to Vercel's env vars and redeploy.
+4. **Register the webhook:** `npm run telegram:setup`
+5. **Send `/start`** to your bot. The first chat to do this claims the bot; everyone else is
+   ignored. `/unlink` releases it.
+
+### Check-ins
+
+Times live in `SLOTS` in [`src/lib/telegram/schedule.ts`](src/lib/telegram/schedule.ts) —
+09:00 breakfast, 12:30 lunch, 19:00 dinner, 21:30 wrap-up, local to `APP_TIMEZONE`. Edit that
+array to change them; nothing else needs updating.
+
+The bot **skips a check-in if that meal is already logged**, so it only nags when it's useful.
+
+`.github/workflows/checkin.yml` drives the schedule from GitHub Actions (free, and it can run
+more than twice a day, unlike Vercel's Hobby cron). Add two repository secrets under
+**Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+| --- | --- |
+| `APP_URL` | your deployed https URL |
+| `CRON_SECRET` | same value as in `.env` |
+
+The endpoint works out which slot is due from the current time rather than trusting the caller,
+and accepts a slot for 100 minutes after its time — so a late or repeated Actions run still
+does the right thing, and can never send the same check-in twice.
+
+To test one by hand: Actions → "Meal check-ins" → Run workflow.
+
+### What it understands
+
+| You send | It does |
+| --- | --- |
+| a meal photo (caption optional) | analyses it, logs it, shows the breakdown with an Undo button |
+| "chicken rice and iced milo" | same, from the text |
+| "how many calories so far?" | answers from your last 7 days of log |
+| "what did I eat yesterday?" | answers from the log |
+| `/today` | today's meals and totals |
+| `/undo` | removes the last meal |
+
+Free-text messages are routed by a classifier (log a meal vs. ask a question vs. small talk);
+it falls back to logging, which is the common case.
 
 ## Notes
 

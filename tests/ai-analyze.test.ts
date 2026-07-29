@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AnalysisError, analyzeWith } from "@/lib/ai/analyze";
+import { AnalysisError, analyzeWith, RateLimitError } from "@/lib/ai/analyze";
 import type { ChatMessage } from "@/lib/ai/types";
 
 const validJson = JSON.stringify({
@@ -55,6 +55,20 @@ describe("analyzeWith", () => {
     const complete = vi.fn().mockResolvedValue("still not json");
     await expect(analyzeWith(complete, input)).rejects.toBeInstanceOf(AnalysisError);
     expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up immediately on a rate limit instead of burning a retry", async () => {
+    const complete = vi.fn().mockRejectedValue(new RateLimitError("rate limited by Groq"));
+    await expect(analyzeWith(complete, input)).rejects.toBeInstanceOf(RateLimitError);
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a no-food reply with no items", async () => {
+    const noFood = JSON.stringify({ meal_summary: "A dog", no_food: true, items: [] });
+    const complete = vi.fn().mockResolvedValue(noFood);
+    const result = await analyzeWith(complete, input);
+    expect(result.no_food).toBe(true);
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 
   it("retries when the schema rejects valid JSON", async () => {

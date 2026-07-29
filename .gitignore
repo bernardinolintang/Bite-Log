@@ -8,3 +8,4 @@ next-env.d.ts
 .vercel/
 test-telegram.db*
 looptest.db*
+test-activity.db*

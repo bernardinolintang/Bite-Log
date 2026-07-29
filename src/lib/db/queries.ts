@@ -1,10 +1,12 @@
 import { desc, eq, inArray, lt } from "drizzle-orm";
 import { db } from "./index";
 import {
+  activities,
   chatMessages,
   checkins,
   mealItems,
   meals,
+  profile,
   settings,
   foodTemplates,
   savedMeals,
@@ -96,6 +98,72 @@ export async function claimChat(chatId: string, username: string | null): Promis
 
 export async function unlinkChat(): Promise<void> {
   await db.delete(telegramChats);
+}
+
+/* ---------- Profile & activities ---------- */
+
+export type ProfileRow = typeof profile.$inferSelect;
+export type ActivityRow = typeof activities.$inferSelect;
+
+const EMPTY_PROFILE: ProfileRow = {
+  id: 1,
+  sex: null,
+  birthYear: null,
+  heightCm: null,
+  weightKg: null,
+  activityLevel: null,
+  targetDeficit: null,
+  updatedAt: 0,
+};
+
+export async function getProfile(): Promise<ProfileRow> {
+  return (await db.query.profile.findFirst()) ?? { ...EMPTY_PROFILE };
+}
+
+/** Merge in whichever fields the user supplied, leaving the rest alone. */
+export async function updateProfile(
+  patch: Partial<Omit<ProfileRow, "id" | "updatedAt">>,
+): Promise<ProfileRow> {
+  const current = await getProfile();
+  const next = { ...current, ...patch, id: 1, updatedAt: Date.now() };
+  await db
+    .insert(profile)
+    .values(next)
+    .onConflictDoUpdate({ target: profile.id, set: next });
+  return next;
+}
+
+export async function addActivity(a: {
+  source: string;
+  externalId?: string | null;
+  description: string;
+  calories: number;
+  loggedAt: number;
+  loggedDate: string;
+}): Promise<string | null> {
+  const id = crypto.randomUUID();
+  const res = await db
+    .insert(activities)
+    .values({ id, externalId: a.externalId ?? null, ...a })
+    .onConflictDoNothing();
+  // A conflict means an external source re-sent a workout we already have.
+  return res.rowsAffected > 0 ? id : null;
+}
+
+export async function getActivitiesForDates(dates: string[]): Promise<ActivityRow[]> {
+  if (dates.length === 0) return [];
+  return db.query.activities.findMany({
+    where: inArray(activities.loggedDate, dates),
+    orderBy: [desc(activities.loggedAt)],
+  });
+}
+
+export async function getRecentActivities(limit = 5): Promise<ActivityRow[]> {
+  return db.query.activities.findMany({ orderBy: [desc(activities.loggedAt)], limit });
+}
+
+export async function deleteActivity(id: string): Promise<void> {
+  await db.delete(activities).where(eq(activities.id, id));
 }
 
 /* ---------- Conversation memory ---------- */

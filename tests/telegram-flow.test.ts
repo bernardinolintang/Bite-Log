@@ -38,10 +38,19 @@ vi.mock("@/lib/telegram/agent", () => ({
   converse: (...a: unknown[]) => converse(...a),
 }));
 
-const route = (intent: string, dayOffset = 0, mealType: string | null = null) => ({
+const route = (
+  intent: string,
+  dayOffset = 0,
+  mealType: string | null = null,
+  extra: Record<string, unknown> = {},
+) => ({
   intent,
   dayOffset,
   mealType,
+  burnedCalories: null,
+  activity: null,
+  profile: null,
+  ...extra,
 });
 
 const OWNER = "12345";
@@ -100,6 +109,10 @@ beforeAll(async () => {
     `CREATE TABLE telegram_chats (id INTEGER PRIMARY KEY, chat_id TEXT NOT NULL, username TEXT, linked_at INTEGER NOT NULL)`,
     `CREATE TABLE checkins (id TEXT PRIMARY KEY, slot TEXT NOT NULL, sent_at INTEGER NOT NULL)`,
     `CREATE TABLE chat_messages (id TEXT PRIMARY KEY, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+    `CREATE TABLE profile (id INTEGER PRIMARY KEY, sex TEXT, birth_year INTEGER, height_cm REAL, weight_kg REAL,
+      activity_level TEXT, target_deficit REAL, updated_at INTEGER NOT NULL)`,
+    `CREATE TABLE activities (id TEXT PRIMARY KEY, source TEXT NOT NULL, external_id TEXT UNIQUE,
+      description TEXT NOT NULL, calories REAL NOT NULL, logged_at INTEGER NOT NULL, logged_date TEXT NOT NULL)`,
   ]);
   ({ handleUpdate } = await import("@/lib/telegram/handle"));
   ({ getRecentMeals } = await import("@/lib/db/queries"));
@@ -283,6 +296,59 @@ describe("telegram bot flow", () => {
       callback_query: { id: "cb3", data: "day:-1", message: { message_id: 9, chat: { id: OWNER } } },
     });
     expect(sent[0].text).toContain("Yesterday");
+  });
+
+  it("logs a workout and reports the resulting balance", async () => {
+    routeMessage.mockResolvedValue(
+      route("log_activity", 0, null, { burnedCalories: 520, activity: "Incline walk" }),
+    );
+    await handleUpdate(textUpdate(OWNER, "burnt about 520 calories on an incline walk"));
+
+    expect(analyzeMeal).not.toHaveBeenCalled();
+    expect(sent[0].text).toContain("Incline walk");
+    expect(sent[0].text).toContain("520");
+    expect(sent[0].text).toContain("Burned");
+  });
+
+  it("asks for a number when a workout has none", async () => {
+    routeMessage.mockResolvedValue(
+      route("log_activity", 0, null, { burnedCalories: null, activity: "Gym session" }),
+    );
+    await handleUpdate(textUpdate(OWNER, "did legs at the gym"));
+    expect(sent[0].text).toContain("How many calories");
+  });
+
+  it("stores body stats and works out maintenance", async () => {
+    routeMessage.mockResolvedValue(
+      route("set_profile", 0, null, {
+        profile: {
+          sex: "male",
+          birthYear: 1999,
+          heightCm: 175,
+          weightKg: 70,
+          activityLevel: "light",
+        },
+      }),
+    );
+    await handleUpdate(textUpdate(OWNER, "I'm male, born 1999, 175cm, 70kg, lightly active"));
+    expect(sent[0].text).toContain("Maintenance");
+    expect(sent[0].text).toMatch(/2\d{3}/); // a plausible kcal figure
+  });
+
+  it("shows a deficit once stats and a workout are known", async () => {
+    await handleUpdate(textUpdate(OWNER, "/balance"));
+    const text = sent[0].text;
+    expect(text).toContain("Eaten");
+    expect(text).toContain("Burned");
+    expect(text).toContain("Maintenance");
+    expect(text).toMatch(/deficit|surplus/);
+  });
+
+  it("breaks macros down per day in /week", async () => {
+    await handleUpdate(textUpdate(OWNER, "/week"));
+    expect(sent[0].text).toContain("Last 7 days");
+    expect(sent[0].text).toMatch(/P \d+g · C \d+g · F \d+g/);
+    expect(sent[0].text).toContain("Daily average");
   });
 
   it("clears conversation memory with /reset but keeps the meal log", async () => {

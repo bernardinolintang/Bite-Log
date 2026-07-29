@@ -1,37 +1,72 @@
 import { groqCompleter } from "@/lib/ai/analyze";
 import type { ChatTurn } from "@/lib/db/queries";
 import type { ChatMessage } from "@/lib/ai/types";
+import { ACTIVITY_MULTIPLIERS, type ActivityLevel, type Sex } from "@/lib/energy";
 import type { MealType } from "@/lib/meals";
 
-export type Intent = "log_meal" | "amend_date" | "converse";
+export type Intent = "log_meal" | "log_activity" | "set_profile" | "amend_date" | "converse";
 
 export interface Routing {
   intent: Intent;
-  /** 0 = today, -1 = yesterday. Applies to the meal being logged or amended. */
+  /** 0 = today, -1 = yesterday. Applies to the meal or workout being logged. */
   dayOffset: number;
   /** Set only when the user names the meal explicitly ("yesterday's dinner"). */
   mealType: MealType | null;
+  /** For log_activity: calories burned and what they did. */
+  burnedCalories: number | null;
+  activity: string | null;
+  /** For set_profile: whichever body stats they mentioned. */
+  profile: ProfilePatch | null;
 }
 
-const ROUTER_PROMPT = `You route messages sent to a personal meal-logging assistant.
+export interface ProfilePatch {
+  sex?: Sex;
+  birthYear?: number;
+  heightCm?: number;
+  weightKg?: number;
+  activityLevel?: ActivityLevel;
+  targetDeficit?: number;
+}
+
+const ROUTER_PROMPT = `You route messages sent to a personal health assistant that tracks
+food eaten and calories burned.
+
 Reply with ONLY a JSON object:
-{"intent": "log_meal" | "amend_date" | "converse", "day_offset": number, "meal_type": "breakfast"|"lunch"|"dinner"|"snack"|null}
+{"intent": "log_meal"|"log_activity"|"set_profile"|"amend_date"|"converse",
+ "day_offset": number,
+ "meal_type": "breakfast"|"lunch"|"dinner"|"snack"|null,
+ "burned_calories": number|null,
+ "activity": string|null,
+ "profile": {"sex":"male"|"female","age":number,"birth_year":number,"height_cm":number,
+             "weight_kg":number,
+             "activity_level":"sedentary"|"light"|"moderate"|"active"|"very_active",
+             "target_deficit":number} | null}
 
 intent:
-- "log_meal": they are telling you what they ate or drank, so you can log it.
-  "chicken rice", "I had two eggs and toast", "just a flat white", "nasi lemak for lunch".
-- "amend_date": they are correcting the day of something ALREADY logged.
-  "that was yesterday", "I told you the sausage platter was from yesterday", "move that to Sunday".
-  Only use this when they refer back to an earlier entry rather than naming new food.
-- "converse": questions about their log or nutrition, greetings, thanks, anything else.
-  "what did I eat today?", "how many calories so far", "ok nice", "thanks", "hey".
+- "log_meal": they are telling you what they ate or drank.
+  "chicken rice", "I had two eggs and toast", "nasi lemak for lunch".
+- "log_activity": they are telling you about exercise or calories burned.
+  "burnt 500 calories on incline walk", "ran 5k, about 400 cals", "did legs at the gym, 300kcal".
+  Put the number in burned_calories and a short label in activity ("Incline walk").
+  If they describe exercise without a number, still use log_activity with burned_calories null.
+- "set_profile": they are giving body stats or a goal. ANY message describing their body,
+  age, sex, height, weight or activity level is set_profile, never log_meal.
+  "I'm male, 27, 178cm, 72kg, lightly active" ->
+    {"intent":"set_profile","profile":{"sex":"male","age":27,"height_cm":178,"weight_kg":72,
+     "activity_level":"light"}}
+  "I weigh 70kg now" -> {"intent":"set_profile","profile":{"weight_kg":70}}
+  "aim for a 500 deficit" -> {"intent":"set_profile","profile":{"target_deficit":500}}
+  Use "age" when they give an age and "birth_year" when they give a year.
+  Fill only the fields they actually mention; omit the rest.
+- "amend_date": correcting the day of something ALREADY logged.
+  "that was yesterday", "I told you the sausage platter was from yesterday".
+  Only when they refer back to an earlier entry rather than naming new food.
+- "converse": questions about their log, maintenance, deficit, or anything else.
+  "what did I eat today?", "am I in a deficit?", "what's my maintenance", "ok nice", "thanks".
 
-day_offset: 0 unless they say otherwise. "yesterday" or "last night" = -1.
-"the day before yesterday" = -2. Only ever 0 or negative.
-
-meal_type: only when they say it outright, otherwise null.
-
-A bare food name with no question mark is almost always "log_meal".`;
+day_offset: 0 unless they say otherwise. "yesterday" or "last night" = -1. Only 0 or negative.
+meal_type: only when stated outright, otherwise null.
+Set unused fields to null.`;
 
 const PERSONA = `You are BiteLog, a warm, concise personal nutrition assistant chatting on Telegram.
 
@@ -40,8 +75,12 @@ const PERSONA = `You are BiteLog, a warm, concise personal nutrition assistant c
 - Use the meal log for every factual claim. Never invent food, numbers, or days.
 - If the log doesn't cover what they asked, say so and offer to log it.
 - Numbers are estimates — don't over-claim precision. Round calories to whole numbers.
-- Never comment on their body, weight, or discipline. No medical advice, no moralising
+- They are aiming for a calorie deficit. Report the numbers matter-of-factly: what they ate,
+  what they burned, where the balance sits. State facts, not judgement.
+- Never comment on their body, appearance, or discipline. No medical advice, no moralising
   about food choices. You are a record keeper, not a coach.
+- Maintenance and burn figures are rough estimates from formulas and app data, not
+  measurements. Say so if a question leans on their precision.
 - Plain text only: no markdown, no asterisks, no headings, no bullet characters.
 - Follow the conversation. If they refer to "that" or "it", look at what was just discussed.`;
 
@@ -50,6 +89,43 @@ function extractJson(raw: string): unknown {
 }
 
 const MEAL_TYPES = new Set(["breakfast", "lunch", "dinner", "snack"]);
+const INTENTS = new Set<Intent>([
+  "log_meal",
+  "log_activity",
+  "set_profile",
+  "amend_date",
+  "converse",
+]);
+const SEXES = new Set(["male", "female"]);
+const LEVELS = new Set(Object.keys(ACTIVITY_MULTIPLIERS));
+
+/** Keep an extracted number only if it lands in a physically sensible range. */
+function inRange(v: unknown, lo: number, hi: number): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? v : undefined;
+}
+
+function readProfile(raw: unknown): ProfilePatch | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const patch: ProfilePatch = {};
+  if (typeof o.sex === "string" && SEXES.has(o.sex)) patch.sex = o.sex as Sex;
+  const thisYear = new Date().getUTCFullYear();
+  const year = inRange(o.birth_year, 1920, thisYear - 12);
+  if (year !== undefined) patch.birthYear = Math.round(year);
+  // People say "I'm 27" far more often than they give a birth year.
+  const age = inRange(o.age, 13, 100);
+  if (year === undefined && age !== undefined) patch.birthYear = thisYear - Math.round(age);
+  const h = inRange(o.height_cm, 100, 250);
+  if (h !== undefined) patch.heightCm = h;
+  const w = inRange(o.weight_kg, 25, 400);
+  if (w !== undefined) patch.weightKg = w;
+  if (typeof o.activity_level === "string" && LEVELS.has(o.activity_level)) {
+    patch.activityLevel = o.activity_level as ActivityLevel;
+  }
+  const d = inRange(o.target_deficit, 0, 1500);
+  if (d !== undefined) patch.targetDeficit = d;
+  return Object.keys(patch).length ? patch : null;
+}
 
 /**
  * Decide what the user wants. Recent turns are included so follow-ups like
@@ -61,12 +137,20 @@ export async function routeMessage(text: string, history: ChatTurn[] = []): Prom
     ...history.slice(-6).map((t) => ({ role: t.role, content: t.content }) as ChatMessage),
     { role: "user", content: text },
   ];
+  const fallback: Routing = {
+    intent: "log_meal",
+    dayOffset: 0,
+    mealType: null,
+    burnedCalories: null,
+    activity: null,
+    profile: null,
+  };
   try {
-    const raw = await groqCompleter({ maxTokens: 120 })(messages);
-    const p = extractJson(raw) as { intent?: string; day_offset?: unknown; meal_type?: unknown };
-    const intent: Intent =
-      p.intent === "amend_date" || p.intent === "converse" || p.intent === "log_meal"
-        ? p.intent
+    const raw = await groqCompleter({ maxTokens: 250 })(messages);
+    const p = extractJson(raw) as Record<string, unknown>;
+    const intent =
+      typeof p.intent === "string" && INTENTS.has(p.intent as Intent)
+        ? (p.intent as Intent)
         : "log_meal";
     const rawOffset = typeof p.day_offset === "number" ? Math.round(p.day_offset) : 0;
     return {
@@ -77,33 +161,28 @@ export async function routeMessage(text: string, history: ChatTurn[] = []): Prom
         typeof p.meal_type === "string" && MEAL_TYPES.has(p.meal_type)
           ? (p.meal_type as MealType)
           : null,
+      burnedCalories: inRange(p.burned_calories, 1, 10_000) ?? null,
+      activity: typeof p.activity === "string" && p.activity.trim() ? p.activity.trim() : null,
+      profile: readProfile(p.profile),
     };
   } catch {
-    // Routing is best-effort; logging is the common case, so fail toward it.
-    return { intent: "log_meal", dayOffset: 0, mealType: null };
+    // Routing is best-effort; logging a meal is the common case, so fail toward it.
+    return fallback;
   }
 }
 
-/** The assistant's conversational reply — questions and small talk both land here. */
+/**
+ * The assistant's conversational reply — questions and small talk both land here.
+ * `context` carries the meal log, workouts and energy figures as plain text.
+ */
 export async function converse(
   text: string,
-  logContext: string,
+  context: string,
   history: ChatTurn[],
-  todayDate: string,
-  target: number | null,
 ): Promise<string> {
   const messages: ChatMessage[] = [
     { role: "system", content: PERSONA },
-    {
-      role: "system",
-      content: [
-        `Today is ${todayDate}.`,
-        target ? `Their daily calorie target is ${Math.round(target)} kcal.` : "No calorie target is set.",
-        "",
-        "Their meal log for the last 7 days (oldest first):",
-        logContext,
-      ].join("\n"),
-    },
+    { role: "system", content: context },
     ...history.slice(-10).map((t) => ({ role: t.role, content: t.content }) as ChatMessage),
     { role: "user", content: text },
   ];

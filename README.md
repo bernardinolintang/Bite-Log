@@ -98,15 +98,60 @@ does the right thing, and can never send the same check-in twice.
 
 To test one by hand: Actions → "Meal check-ins" → Run workflow.
 
+### Calorie deficit
+
+Tell the bot your stats once — "I'm male, 27, 178cm, 72kg, lightly active" — and it works out
+your maintenance calories with the Mifflin-St Jeor equation. `/balance` then shows the day's
+energy: eaten, burned, maintenance, and whether you're in deficit or surplus.
+
+Pick the activity level that describes your day **without** deliberate exercise. Logged
+workouts are added on top, so choosing "very active" *and* logging every gym session counts
+the same effort twice.
+
+Log workouts by telling the bot: *"burnt about 500 calories on an incline walk"*.
+
+### Getting calories burned in automatically
+
+`POST /api/activity` accepts burned calories from anything that can send JSON:
+
+```bash
+curl -X POST "$APP_URL/api/activity" \
+  -H "Authorization: Bearer $CRON_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"description":"Incline walk","calories":520,"externalId":"health-2026-07-30"}'
+```
+
+Send an `externalId` and re-posting the same workout is a no-op, so a repeating automation is
+safe to run as often as you like.
+
+**Apple Health** has no cloud API — HealthKit data never leaves the device on its own. The way
+in is an iOS Shortcut:
+
+1. Shortcuts app → Automation → **Time of Day**, e.g. 22:00 daily
+2. **Find Health Samples** → Active Energy → today → Sum
+3. **Get Contents of URL** → your `$APP_URL/api/activity`, method POST,
+   header `Authorization: Bearer <CRON_SECRET>`, JSON body with `calories` set to the sum
+   from step 2 and `externalId` set to something like `health-` plus today's date
+
+**Strava** does have a proper API (OAuth + activity webhooks) and could push workouts here
+automatically — it just isn't built yet.
+
+**Hevy** exposes an API on its paid tier. **Strong** has no API at all; it only exports CSV.
+For both, telling the bot what you burned is the practical route.
+
 ### What it understands
 
 | You send | It does |
 | --- | --- |
 | a meal photo (caption optional) | analyses it, logs it, shows the breakdown with an Undo button |
 | "chicken rice and iced milo" | same, from the text |
-| "how many calories so far?" | answers from your last 7 days of log |
-| "what did I eat yesterday?" | answers from the log |
-| `/today` | today's meals and totals |
+| "that was yesterday's dinner" | logs or moves it to the right day |
+| "burnt 500 calories on incline walks" | logs the workout and updates the deficit |
+| "I'm male, 27, 178cm, 72kg, lightly active" | saves your stats and works out maintenance |
+| "am I in a deficit?" | answers from food, workouts and maintenance together |
+| `/menu` | buttons: Today, Yesterday, Deficit, 7 days, Profile, Undo |
+| `/balance` | today's energy in and out |
+| `/week` | 7 days with per-day macros |
 | `/undo` | removes the last meal |
 
 Free-text messages are routed by a classifier (log a meal vs. ask a question vs. small talk);

@@ -2,26 +2,31 @@ import { analyzeMeal, RateLimitError } from "@/lib/ai/analyze";
 import { applyFoodMemory } from "@/lib/food-memory";
 import { getAllFoodTemplates } from "@/lib/db/memory";
 import {
+  addActivity,
   appendTurn,
   type ChatTurn,
   claimChat,
   clearTurns,
   deleteMeal,
+  getActivitiesForDates,
   getLinkedChat,
   getMealsByDate,
   getMealsForDates,
+  getProfile,
   getRecentMeals,
   getRecentTurns,
   getSettings,
   pruneTurns,
   setMealDate,
   unlinkChat,
+  updateProfile,
 } from "@/lib/db/queries";
 import { dbItemToFoodItem } from "@/lib/convert";
 import { dateStringFor, formatDisplayDate, lastNDates, todayString } from "@/lib/dates";
+import { energyBalance, maintenance } from "@/lib/energy";
 import { saveMeal, type MealType } from "@/lib/meals";
 import { calcTotals } from "@/lib/nutrition";
-import { converse, routeMessage } from "./agent";
+import { converse, routeMessage, type ProfilePatch } from "./agent";
 import {
   answerCallbackQuery,
   editMessageText,
@@ -31,7 +36,14 @@ import {
   sendChatAction,
   sendMessage,
 } from "./api";
-import { formatDaySummary, formatLoggedMeal, formatWeekSummary, mealsAsContext } from "./format";
+import {
+  formatBalance,
+  formatDaySummary,
+  formatLoggedMeal,
+  formatProfile,
+  formatWeekSummary,
+  mealsAsContext,
+} from "./format";
 import { mealTypeForTime } from "./schedule";
 
 const TZ = process.env.APP_TIMEZONE || "Asia/Singapore";
@@ -65,11 +77,14 @@ const HELP = [
   "",
   "📸 <b>Send a photo of your meal</b> — I'll break down the calories and macros and log it.",
   "✍️ <b>Or just type it</b> — \"chicken rice and iced milo\".",
+  "🔥 <b>Log workouts</b> — \"burnt 500 calories on an incline walk\".",
   "🕐 <b>Back-date it</b> — \"that was yesterday's dinner\" and I'll move it.",
-  "❓ <b>Just talk to me</b> — \"what did I eat today?\", \"how am I doing on protein?\"",
+  "❓ <b>Just talk to me</b> — \"am I in a deficit?\", \"how am I doing on protein?\"",
   "",
   "/menu — buttons for the common stuff",
-  "/today — today's log and totals",
+  "/balance — today's deficit: eaten vs burned",
+  "/week — 7 days with macros",
+  "/profile — your stats and maintenance calories",
   "/undo — remove the last thing I logged",
   "/reset — forget our conversation so far",
   "",
@@ -82,7 +97,11 @@ const MENU_BUTTONS: InlineButton[][] = [
     { text: "📅 Yesterday", callback_data: "day:-1" },
   ],
   [
+    { text: "⚡️ Deficit", callback_data: "balance" },
     { text: "📈 Last 7 days", callback_data: "week" },
+  ],
+  [
+    { text: "👤 Profile", callback_data: "profile" },
     { text: "🗑 Undo last", callback_data: "undo" },
   ],
 ];
@@ -92,7 +111,7 @@ function loggedButtons(mealId: string): InlineButton[][] {
   return [
     [
       { text: "🗑 Undo", callback_data: `del:${mealId}` },
-      { text: "📊 Today", callback_data: "day:0" },
+      { text: "⚡️ Deficit", callback_data: "balance" },
     ],
   ];
 }
@@ -218,24 +237,105 @@ async function amendDate(chatId: string, dayOffset: number): Promise<void> {
   );
 }
 
+/** Log calories burned. Without a number we can't do the maths, so ask for one. */
+async function logActivity(
+  chatId: string,
+  description: string,
+  calories: number | null,
+  dayOffset: number,
+): Promise<void> {
+  if (calories === null) {
+    await reply(
+      chatId,
+      `Nice one 💪 How many calories did <b>${esc(description)}</b> burn? Your watch or the app should have a number.`,
+    );
+    return;
+  }
+  const { at, date } = dateForOffset(dayOffset);
+  await addActivity({
+    source: "telegram",
+    description,
+    calories,
+    loggedAt: at,
+    loggedDate: date,
+  });
+  const suffix = dayOffset !== 0 ? ` on ${formatDisplayDate(date)}` : "";
+  await reply(
+    chatId,
+    `🔥 Logged <b>${esc(description)}</b> — ${Math.round(calories)} kcal${suffix}.\n\n${await balanceText(dayOffset)}`,
+  );
+}
+
+async function applyProfile(chatId: string, patch: ProfilePatch): Promise<void> {
+  const saved = await updateProfile(patch);
+  const maint = maintenance(saved as never);
+  const named = Object.keys(patch).length;
+  if (!maint) {
+    await reply(
+      chatId,
+      `Noted ${named} thing${named === 1 ? "" : "s"}. ${formatProfile(saved, null)}`,
+    );
+    return;
+  }
+  await reply(chatId, `Got it 👍\n\n${formatProfile(saved, maint)}`);
+}
+
+/** Everything the model needs to answer questions about food, workouts and deficit. */
+async function buildContext(): Promise<string> {
+  const dates = lastNDates(7, TZ);
+  const today = todayString(TZ);
+  const [meals, acts, prof, prefs] = await Promise.all([
+    getMealsForDates(dates),
+    getActivitiesForDates(dates),
+    getProfile(),
+    getSettings(),
+  ]);
+  const maint = maintenance(prof as never);
+  const eatenToday = calcTotals(
+    meals.filter((m) => m.loggedDate === today).flatMap((m) => m.items.map(dbItemToFoodItem)),
+  ).calories;
+  const burnedToday = acts
+    .filter((a) => a.loggedDate === today)
+    .reduce((s, a) => s + a.calories, 0);
+
+  const lines = [`Today is ${today}.`];
+  if (maint) {
+    lines.push(
+      `Their maintenance is about ${maint.baseline} kcal/day before exercise (BMR ${maint.bmr}).`,
+    );
+    const b = energyBalance(eatenToday, maint.baseline, burnedToday);
+    lines.push(
+      `Today: ate ${b.eaten}, burned ${b.burned} from exercise, total out ${b.out} — ` +
+        (b.deficit >= 0 ? `a ${b.deficit} kcal deficit.` : `a ${-b.deficit} kcal surplus.`),
+    );
+  } else {
+    lines.push("Their body stats aren't set, so maintenance calories are unknown.");
+  }
+  if (prof.targetDeficit) lines.push(`They are aiming for a ${prof.targetDeficit} kcal/day deficit.`);
+  if (prefs.calorieTarget) lines.push(`Their calorie target is ${prefs.calorieTarget} kcal.`);
+
+  lines.push("", "Meal log, last 7 days (oldest first):", mealsAsContext(meals));
+  lines.push(
+    "",
+    "Exercise logged, last 7 days:",
+    acts.length
+      ? [...acts]
+          .reverse()
+          .map((a) => `${a.loggedDate}: ${a.description} — ${Math.round(a.calories)} kcal (${a.source})`)
+          .join("\n")
+      : "(none)",
+  );
+  return lines.join("\n");
+}
+
 /** `history` excludes the current message — it is passed separately as the final turn. */
 async function handleConversation(
   chatId: string,
   text: string,
   history: ChatTurn[],
 ): Promise<void> {
-  const [meals, prefs] = await Promise.all([
-    getMealsForDates(lastNDates(7, TZ)),
-    getSettings(),
-  ]);
   try {
-    const answer = await converse(
-      text,
-      mealsAsContext(meals),
-      history,
-      todayString(TZ),
-      prefs.calorieTarget,
-    );
+    const answer = await converse(text, await buildContext(), history);
     await reply(chatId, esc(answer) || "I'm not sure how to answer that — try /menu?");
   } catch (err) {
     if (err instanceof RateLimitError) {
@@ -255,8 +355,39 @@ async function sendDay(chatId: string, offset: number): Promise<void> {
 
 async function sendWeek(chatId: string): Promise<void> {
   const dates = lastNDates(7, TZ);
-  const [meals, prefs] = await Promise.all([getMealsForDates(dates), getSettings()]);
-  await reply(chatId, formatWeekSummary(meals, dates, prefs));
+  const [meals, prefs, acts] = await Promise.all([
+    getMealsForDates(dates),
+    getSettings(),
+    getActivitiesForDates(dates),
+  ]);
+  await reply(chatId, formatWeekSummary(meals, dates, prefs, acts));
+}
+
+async function balanceText(offset: number): Promise<string> {
+  const { date } = dateForOffset(offset);
+  const [meals, acts, prof] = await Promise.all([
+    getMealsByDate(date),
+    getActivitiesForDates([date]),
+    getProfile(),
+  ]);
+  const totals = calcTotals(meals.flatMap((m) => m.items.map(dbItemToFoodItem)));
+  return formatBalance(
+    totals.calories,
+    totals,
+    acts,
+    maintenance(prof as never),
+    prof.targetDeficit,
+    dayLabel(offset, date),
+  );
+}
+
+async function sendBalance(chatId: string, offset = 0): Promise<void> {
+  await reply(chatId, await balanceText(offset));
+}
+
+async function sendProfile(chatId: string): Promise<void> {
+  const prof = await getProfile();
+  await reply(chatId, formatProfile(prof, maintenance(prof as never)));
 }
 
 async function undoLast(chatId: string): Promise<void> {
@@ -295,6 +426,13 @@ async function handleCommand(chatId: string, cmd: string, username: string | nul
     case "/week":
       await sendWeek(chatId);
       return true;
+    case "/balance":
+    case "/deficit":
+      await sendBalance(chatId, 0);
+      return true;
+    case "/profile":
+      await sendProfile(chatId);
+      return true;
     case "/undo":
       await undoLast(chatId);
       return true;
@@ -323,6 +461,14 @@ async function handleCallback(chatId: string, data: string, messageId?: number):
   }
   if (data === "week") {
     await sendWeek(chatId);
+    return;
+  }
+  if (data === "balance") {
+    await sendBalance(chatId, 0);
+    return;
+  }
+  if (data === "profile") {
+    await sendProfile(chatId);
     return;
   }
   if (data === "undo") {
@@ -402,6 +548,15 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
       dayOffset: routing.dayOffset,
       mealType: routing.mealType,
     });
+  } else if (routing.intent === "log_activity") {
+    await logActivity(
+      chatId,
+      routing.activity || "Workout",
+      routing.burnedCalories,
+      routing.dayOffset,
+    );
+  } else if (routing.intent === "set_profile" && routing.profile) {
+    await applyProfile(chatId, routing.profile);
   } else if (routing.intent === "amend_date") {
     await amendDate(chatId, routing.dayOffset);
   } else {

@@ -1,7 +1,14 @@
 import type { FoodItem } from "@/lib/ai/schema";
 import { dbItemToFoodItem } from "@/lib/convert";
 import { formatDisplayDate } from "@/lib/dates";
-import type { MealWithItems, SettingsRow } from "@/lib/db/queries";
+import type { ActivityRow, MealWithItems, ProfileRow, SettingsRow } from "@/lib/db/queries";
+import {
+  ACTIVITY_LABELS,
+  energyBalance,
+  weeklyRateKg,
+  type ActivityLevel,
+  type Maintenance,
+} from "@/lib/energy";
 import { calcTotals } from "@/lib/nutrition";
 import { esc } from "./api";
 
@@ -79,11 +86,12 @@ export function formatDaySummary(
   return lines.join("\n");
 }
 
-/** Per-day calorie totals across a date range, for the "last 7 days" button. */
+/** Per-day totals with macros across a date range, for the "last 7 days" button. */
 export function formatWeekSummary(
   meals: MealWithItems[],
   dates: string[],
   prefs: SettingsRow,
+  activities: ActivityRow[] = [],
 ): string {
   const byDate = new Map<string, MealWithItems[]>();
   for (const m of meals) {
@@ -91,24 +99,119 @@ export function formatWeekSummary(
     if (list) list.push(m);
     else byDate.set(m.loggedDate, [m]);
   }
+  const burnedByDate = new Map<string, number>();
+  for (const a of activities) {
+    burnedByDate.set(a.loggedDate, (burnedByDate.get(a.loggedDate) ?? 0) + a.calories);
+  }
   const logged = dates.filter((d) => byDate.has(d));
   if (logged.length === 0) return "Nothing logged in the last 7 days.";
 
   const lines: string[] = ["<b>Last 7 days</b>", ""];
-  let sum = 0;
+  const run = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
   for (const d of dates) {
     const dayMeals = byDate.get(d);
     if (!dayMeals) {
-      lines.push(`${formatDisplayDate(d)} — <i>nothing logged</i>`);
+      lines.push(`<b>${formatDisplayDate(d)}</b> — <i>nothing logged</i>`);
       continue;
     }
-    const kcal = calcTotals(dayMeals.flatMap((m) => m.items.map(dbItemToFoodItem))).calories;
-    sum += kcal;
-    const flag = prefs.calorieTarget && kcal > prefs.calorieTarget ? " ▲" : "";
-    lines.push(`${formatDisplayDate(d)} — <b>${r(kcal)}</b> kcal${flag}`);
+    const t = calcTotals(dayMeals.flatMap((m) => m.items.map(dbItemToFoodItem)));
+    run.calories += t.calories;
+    run.protein_g += t.protein_g;
+    run.carbs_g += t.carbs_g;
+    run.fat_g += t.fat_g;
+    const flag = prefs.calorieTarget && t.calories > prefs.calorieTarget ? " ▲" : "";
+    const burned = burnedByDate.get(d);
+    lines.push(
+      `<b>${formatDisplayDate(d)}</b> — ${r(t.calories)} kcal${flag}${burned ? `  🔥 ${r(burned)}` : ""}`,
+    );
+    lines.push(`   P ${r(t.protein_g)}g · C ${r(t.carbs_g)}g · F ${r(t.fat_g)}g`);
   }
+  const n = logged.length;
   lines.push("");
-  lines.push(`Average on days you logged: <b>${r(sum / logged.length)}</b> kcal`);
+  lines.push(`<b>Daily average</b> over ${n} logged day${n === 1 ? "" : "s"}`);
+  lines.push(
+    `${r(run.calories / n)} kcal · P ${r(run.protein_g / n)}g · C ${r(run.carbs_g / n)}g · F ${r(run.fat_g / n)}g`,
+  );
+  return lines.join("\n");
+}
+
+/** The /balance view: eaten vs burned, and where the deficit sits. */
+export function formatBalance(
+  eaten: number,
+  totals: { protein_g: number; carbs_g: number; fat_g: number },
+  activities: ActivityRow[],
+  maint: Maintenance | null,
+  targetDeficit: number | null,
+  heading = "Today",
+): string {
+  const burned = activities.reduce((a, x) => a + x.calories, 0);
+  const lines: string[] = [`<b>${esc(heading)} — energy</b>`, ""];
+  lines.push(`🍽 Eaten      <b>${r(eaten)}</b> kcal`);
+  lines.push(`   P ${r(totals.protein_g)}g · C ${r(totals.carbs_g)}g · F ${r(totals.fat_g)}g`);
+
+  if (activities.length) {
+    lines.push("");
+    lines.push(`🔥 Burned     <b>${r(burned)}</b> kcal`);
+    for (const a of activities) lines.push(`   ${esc(a.description)} — ${r(a.calories)}`);
+  }
+
+  if (!maint) {
+    lines.push("");
+    lines.push("<i>Tell me your stats and I can work out your maintenance calories —");
+    lines.push("e.g. \"I'm male, 27, 178cm, 72kg, lightly active\". Or use /profile.</i>");
+    return lines.join("\n");
+  }
+
+  const b = energyBalance(eaten, maint.baseline, burned);
+  lines.push("");
+  lines.push(`⚡️ Maintenance <b>${r(b.baseline)}</b> kcal (before exercise)`);
+  lines.push(`   Total out   <b>${r(b.out)}</b> kcal`);
+  lines.push("");
+  if (b.deficit >= 0) {
+    lines.push(`✅ <b>${r(b.deficit)} kcal deficit</b>`);
+  } else {
+    lines.push(`📈 <b>${r(-b.deficit)} kcal surplus</b>`);
+  }
+  const rate = weeklyRateKg(b.deficit);
+  if (rate !== 0) {
+    lines.push(
+      `<i>At this rate: ${rate > 0 ? "−" : "+"}${Math.abs(rate)} kg/week</i>`,
+    );
+  }
+  if (targetDeficit) {
+    const gap = b.deficit - targetDeficit;
+    lines.push(
+      gap >= 0
+        ? `<i>Target was ${r(targetDeficit)} — you're ${r(gap)} past it.</i>`
+        : `<i>Target was ${r(targetDeficit)} — ${r(-gap)} to go.</i>`,
+    );
+  }
+  return lines.join("\n");
+}
+
+export function formatProfile(p: ProfileRow, maint: Maintenance | null): string {
+  const unset = "<i>not set</i>";
+  const lines = [
+    "<b>Your profile</b>",
+    "",
+    `Sex: ${p.sex ?? unset}`,
+    `Born: ${p.birthYear ?? unset}`,
+    `Height: ${p.heightCm ? `${p.heightCm} cm` : unset}`,
+    `Weight: ${p.weightKg ? `${p.weightKg} kg` : unset}`,
+    `Daily activity: ${p.activityLevel ? `${p.activityLevel} — ${ACTIVITY_LABELS[p.activityLevel as ActivityLevel]}` : unset}`,
+    `Target deficit: ${p.targetDeficit ? `${r(p.targetDeficit)} kcal/day` : unset}`,
+  ];
+  lines.push("");
+  if (maint) {
+    lines.push(`BMR (at rest): <b>${r(maint.bmr)}</b> kcal`);
+    lines.push(`Maintenance: <b>${r(maint.baseline)}</b> kcal/day before exercise`);
+    lines.push("");
+    lines.push("<i>Workouts you log are added on top of maintenance, so pick the activity");
+    lines.push("level that describes your day WITHOUT deliberate exercise.</i>");
+  } else {
+    lines.push("<i>Tell me the missing bits in one message and I'll work out your");
+    lines.push("maintenance — e.g. \"male, born 1999, 178cm, 72kg, lightly active\".</i>");
+  }
   return lines.join("\n");
 }
 

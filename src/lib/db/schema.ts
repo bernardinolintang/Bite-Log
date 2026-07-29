@@ -67,6 +67,21 @@ export const savedMeals = sqliteTable("saved_meals", {
   lastLoggedAt: integer("last_logged_at").notNull(),
 });
 
+/** The single Telegram chat allowed to use the bot — claimed by the first /start. */
+export const telegramChats = sqliteTable("telegram_chats", {
+  id: integer("id").primaryKey(), // always 1
+  chatId: text("chat_id").notNull(),
+  username: text("username"),
+  linkedAt: integer("linked_at").notNull(),
+});
+
+/** One row per check-in actually sent, so a re-run of the scheduler cannot double-nag. */
+export const checkins = sqliteTable("checkins", {
+  id: text("id").primaryKey(), // `${YYYY-MM-DD}:${slot}`
+  slot: text("slot").notNull(),
+  sentAt: integer("sent_at").notNull(),
+});
+
 export const mealsRelations = relations(meals, ({ many }) => ({
   items: many(mealItems),
 }));

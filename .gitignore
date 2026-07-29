@@ -6,3 +6,5 @@ local.db*
 *.tsbuildinfo
 next-env.d.ts
 .vercel/
+test-telegram.db*
+looptest.db*

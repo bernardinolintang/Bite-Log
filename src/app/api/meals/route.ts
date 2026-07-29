@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { foodItemSchema } from "@/lib/ai/schema";
-import { foodItemToDbValues } from "@/lib/convert";
-import { dateStringFor } from "@/lib/dates";
-import { rememberMealItems, rememberSavedMeal } from "@/lib/db/memory";
-import { db } from "@/lib/db";
-import { mealItems, meals } from "@/lib/db/schema";
+import { saveMeal } from "@/lib/meals";
 
 const saveSchema = z.object({
   mealType: z.enum(["breakfast", "lunch", "dinner", "snack"]),
@@ -21,21 +17,6 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid meal data" }, { status: 400 });
   }
-  const d = parsed.data;
-  const id = crypto.randomUUID();
-  const now = Date.now();
-  await db.insert(meals).values({
-    id,
-    mealType: d.mealType,
-    inputType: d.inputType,
-    description: d.description ?? null,
-    thumbnail: d.thumbnail ?? null,
-    aiSummary: d.aiSummary ?? null,
-    loggedAt: now,
-    loggedDate: dateStringFor(now),
-  });
-  await db.insert(mealItems).values(d.items.map((i) => foodItemToDbValues(i, id)));
-  await rememberMealItems(d.items);
-  await rememberSavedMeal(d.items, d.mealType, d.aiSummary, d.thumbnail);
+  const id = await saveMeal(parsed.data);
   return NextResponse.json({ id });
 }

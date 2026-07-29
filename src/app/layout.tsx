@@ -12,6 +12,10 @@ const newsreader = Newsreader({
 export const metadata: Metadata = {
   title: "BiteLog",
   description: "Personal AI meal logging — estimates only, always editable.",
+  icons: {
+    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/icon.svg", type: "image/svg+xml" }],
+  },
 };
 
 export const viewport: Viewport = {

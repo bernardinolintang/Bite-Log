@@ -15,12 +15,14 @@ export interface SaveMealInput {
   thumbnail?: string | null;
   aiSummary?: string | null;
   items: FoodItem[];
+  /** Defaults to now. Set it to back-date a meal ("that was yesterday's dinner"). */
+  loggedAt?: number;
 }
 
 /** Persist a meal and fold it into the food/quick-log memory. Shared by the web UI and the bot. */
 export async function saveMeal(input: SaveMealInput): Promise<string> {
   const id = crypto.randomUUID();
-  const now = Date.now();
+  const at = input.loggedAt ?? Date.now();
   await db.insert(meals).values({
     id,
     mealType: input.mealType,
@@ -28,8 +30,8 @@ export async function saveMeal(input: SaveMealInput): Promise<string> {
     description: input.description ?? null,
     thumbnail: input.thumbnail ?? null,
     aiSummary: input.aiSummary ?? null,
-    loggedAt: now,
-    loggedDate: dateStringFor(now),
+    loggedAt: at,
+    loggedDate: dateStringFor(at),
   });
   await db.insert(mealItems).values(input.items.map((i) => foodItemToDbValues(i, id)));
   await rememberMealItems(input.items);

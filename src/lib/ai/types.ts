@@ -8,6 +8,10 @@ export interface AnalyzeInput {
   description?: string;
   mealType: string;
   clarifications?: Clarification[];
+  /** A previous breakdown being revised, as plain text. */
+  previous?: string;
+  /** What the user says was wrong with it. */
+  correction?: string;
 }
 
 export type ContentPart =

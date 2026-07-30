@@ -13,18 +13,21 @@ import {
   getLinkedChat,
   getMealsByDate,
   getMealsForDates,
+  getMealWithItems,
   getProfile,
   getRecentMeals,
   getRecentTurns,
   getSettings,
   getState,
+  type MealWithItems,
   pruneTurns,
+  replaceMealItems,
   setMealDate,
   setState,
   unlinkChat,
   updateProfile,
 } from "@/lib/db/queries";
-import { dbItemToFoodItem } from "@/lib/convert";
+import { dbItemToFoodItem, foodItemToDbValues } from "@/lib/convert";
 import { dateStringFor, formatDisplayDate, lastNDates, todayString } from "@/lib/dates";
 import { energyBalance, maintenance } from "@/lib/energy";
 import { saveMeal, type MealType } from "@/lib/meals";
@@ -89,6 +92,7 @@ const HELP = [
   "📸 <b>Send a photo of your meal</b> — I'll break down the calories and macros and log it.",
   "✍️ <b>Or just type it</b> — \"chicken rice and iced milo\".",
   "🔥 <b>Log workouts</b> — \"burnt 500 calories on an incline walk\".",
+  "✏️ <b>Correct me</b> — \"that's french toast, not kaya\" or \"3 slices not 2\". I'll redo the numbers.",
   "🕐 <b>Back-date it</b> — \"that was yesterday's dinner\" and I'll move it.",
   "❓ <b>Just talk to me</b> — \"am I in a deficit?\", \"how am I doing on protein?\"",
   "",
@@ -121,9 +125,10 @@ const MENU_BUTTONS: InlineButton[][] = [
 function loggedButtons(mealId: string): InlineButton[][] {
   return [
     [
+      { text: "✏️ Fix this", callback_data: `fix:${mealId}` },
       { text: "🗑 Undo", callback_data: `del:${mealId}` },
-      { text: "⚡️ Deficit", callback_data: "balance" },
     ],
+    [{ text: "⚡️ Deficit", callback_data: "balance" }],
   ];
 }
 
@@ -226,6 +231,73 @@ async function logMeal(
     text = `${text}\n\n<i>Logged under ${dayLabel(offset, date).toLowerCase()}, ${formatDisplayDate(date)}.</i>`;
   }
   await reply(chatId, text, loggedButtons(id));
+}
+
+/** Which meal a pending "what was wrong?" answer applies to. */
+const FIXING = "fixing_meal_id";
+
+/** Render a stored meal the way the model first described it, for re-analysis. */
+function breakdownAsText(meal: MealWithItems): string {
+  const lines = [meal.aiSummary || meal.description || meal.mealType];
+  for (const i of meal.items) {
+    lines.push(
+      `- ${i.foodName} (${i.quantityDesc}${i.grams ? `, ${i.grams}g` : ""}): ` +
+        `${Math.round(i.calories)} kcal, P${i.proteinG} C${i.carbsG} F${i.fatG}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Re-estimate a logged meal from the user's correction. The photo isn't kept, so the
+ * previous breakdown stands in for it — the user's words are treated as authoritative.
+ */
+async function correctMeal(chatId: string, correction: string, mealId?: string): Promise<void> {
+  const meal = mealId ? await getMealWithItems(mealId) : (await getRecentMeals(1))[0];
+  if (!meal) {
+    await reply(chatId, "There's nothing logged yet for me to fix.");
+    return;
+  }
+
+  let analysis;
+  try {
+    analysis = await analyzeMeal({
+      mealType: meal.mealType,
+      description: meal.description ?? undefined,
+      previous: breakdownAsText(meal),
+      correction,
+    });
+  } catch (err) {
+    if (err instanceof RateLimitError) {
+      await reply(chatId, "Rate-limited for a moment — send that correction again shortly 🙏");
+      return;
+    }
+    console.error("telegram correction failed:", err);
+    await reply(chatId, "I couldn't work out that correction. Try telling me the whole meal again?");
+    return;
+  }
+
+  if (analysis.no_food || analysis.items.length === 0) {
+    await reply(chatId, "That left nothing to log — use 🗑 Undo if the whole entry was wrong.");
+    return;
+  }
+
+  const items = applyFoodMemory(analysis.items, await getAllFoodTemplates());
+  await replaceMealItems(
+    meal.id,
+    items.map((i) => foodItemToDbValues(i, meal.id)),
+    analysis.meal_summary || meal.aiSummary,
+  );
+
+  const prefs = await getSettings();
+  const text = formatLoggedMeal(
+    analysis.meal_summary || meal.aiSummary || "",
+    meal.mealType,
+    items,
+    await dayCalories(meal.loggedDate),
+    prefs.calorieTarget,
+  );
+  await reply(chatId, `✏️ <i>Updated.</i>\n\n${text}`, loggedButtons(meal.id));
 }
 
 /** "That was yesterday" — move the most recent meal to another day. */
@@ -570,6 +642,14 @@ async function handleCallback(chatId: string, data: string, messageId?: number):
     await handleSetupCallback(chatId, data);
     return;
   }
+  if (data.startsWith("fix:")) {
+    await setState(FIXING, data.slice(4));
+    await reply(
+      chatId,
+      "What did I get wrong? Tell me in your own words — e.g. \"that's french toast, not kaya\", \"3 slices not 2\", or \"the coffee was black\".",
+    );
+    return;
+  }
   if (data.startsWith("del:")) {
     await deleteMeal(data.slice(4));
     if (messageId) await editMessageText(chatId, messageId, "🗑 <i>Removed from your log.</i>");
@@ -664,6 +744,17 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
     return;
   }
 
+  // "✏️ Fix this" was tapped, so this message is the correction.
+  const fixingId = await getState(FIXING);
+  if (fixingId) {
+    await clearState(FIXING);
+    await appendTurn("user", text);
+    await sendChatAction(chatId);
+    await correctMeal(chatId, text, fixingId);
+    await pruneTurns();
+    return;
+  }
+
   await sendChatAction(chatId);
   const history = await getRecentTurns();
   await appendTurn("user", text);
@@ -684,6 +775,8 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
     );
   } else if (routing.intent === "set_profile" && routing.profile) {
     await applyProfile(chatId, routing.profile);
+  } else if (routing.intent === "correct_meal") {
+    await correctMeal(chatId, text);
   } else if (routing.intent === "amend_date") {
     await amendDate(chatId, routing.dayOffset);
   } else {

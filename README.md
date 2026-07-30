@@ -1,116 +1,208 @@
 # 🥗 BiteLog
 
-Personal AI meal logger: snap a photo or describe a meal → an AI vision model estimates
-calories and macros → edit anything → save to your daily log. Built to deploy on Vercel.
-All numbers are estimates for awareness — not medical advice.
+**A personal calorie-deficit tracker you talk to in Telegram.**
 
-## Stack
+Send a photo of your meal and BiteLog identifies every item, estimates calories and macros,
+and logs it. Tell it what you burned at the gym and it works out whether you're in a deficit.
+Ask it questions in plain English — *"am I in a deficit?"*, *"what did I eat yesterday?"* —
+and it answers from your actual log.
 
-Next.js (App Router) · Tailwind CSS · Drizzle ORM + libSQL (local file in dev, Turso in prod) ·
-Groq API (OpenAI-compatible vision model) · Zod · Vitest
+There's also a web dashboard, but the bot is the main way in: it lives in your pocket and
+checks in at mealtimes, so logging takes about five seconds.
 
-## The AI model
+> All numbers are **estimates for personal awareness** — not medical advice. Maintenance
+> calories come from a formula, and app-reported exercise burn tends to run high. Trust the
+> scale over the arithmetic.
 
-`GROQ_MODEL` **must name a model that accepts image input** — check the `input_modalities`
-field at https://console.groq.com/docs/models. Groq retires models regularly; when photo
-analysis starts failing with a 404, this is why. Pick a current vision model and update
-`GROQ_MODEL` (the default lives in `DEFAULT_GROQ_MODEL` in `src/lib/ai/analyze.ts`).
+---
 
-Reasoning is explicitly disabled on the request. These models otherwise spend their token
-budget "thinking", which truncates the JSON reply and makes a photo take ~35s instead of ~2s.
+## Contents
 
-Groq's free tier allows 8,000 tokens/minute and a photo costs ~2,000, so roughly four photo
-analyses per minute. Past that the app shows a "wait about a minute" message.
+- [What it does](#what-it-does)
+- [User guide](#user-guide) ← **start here**
+- [Correcting mistakes](#correcting-mistakes)
+- [Calorie deficit](#calorie-deficit)
+- [Automatic exercise import](#automatic-exercise-import)
+- [Setup](#setup)
+- [How it works](#how-it-works)
+- [Troubleshooting](#troubleshooting)
 
-## Local setup
+---
 
-1. `npm install`
-2. `cp .env.example .env` and fill in:
-   - `GROQ_API_KEY` — from https://console.groq.com/keys (free tier works)
-3. `npm run db:push` — creates `local.db`
-4. `npm run dev` — open http://localhost:3000
+## What it does
 
-To use it from your phone on the same Wi-Fi: `npm run dev -- -H 0.0.0.0` and open
-`http://<your-pc-ip>:3000` (camera capture requires HTTPS on some browsers — the deployed
-Vercel version has HTTPS and always works).
+| | |
+| --- | --- |
+| 📸 **Photo → nutrition** | Per-item breakdown with calories, protein, carbs, fat, and a confidence score |
+| ✍️ **Text logging** | *"chicken rice and iced milo"* works just as well as a photo |
+| ✏️ **Corrections** | *"that's french toast, not kaya"* → it re-estimates the whole meal |
+| 🔥 **Exercise** | *"burnt 500 on an incline walk"*, or import from Apple Health automatically |
+| ⚡️ **Deficit tracking** | Maintenance calories from your stats, minus what you ate, plus what you burned |
+| 💬 **Conversation** | Remembers the thread, so follow-ups like *"was that a lot of fat?"* work |
+| ⏰ **Mealtime check-ins** | Nudges at breakfast, lunch, dinner — and stays quiet if you already logged |
+| 🧠 **Food memory** | Once you correct a food, it remembers your numbers for next time |
+| 📱 **Web dashboard** | Installable PWA for browsing history and editing entries |
 
-## Tests
+---
 
-`npm test`
+## User guide
 
-## Deploy (Vercel + Turso)
+### First run
 
-1. Push this repo to GitHub.
-2. Create a Turso database (https://turso.tech, free tier):
-   - `turso db create bitelog`
-   - `turso db show bitelog --url` → `DATABASE_URL`
-   - `turso db tokens create bitelog` → `DATABASE_AUTH_TOKEN`
-3. Apply the schema to Turso: temporarily set both values in `.env`, run `npm run db:push`,
-   then restore `DATABASE_URL=file:local.db` for local dev.
-4. Import the repo at https://vercel.com/new and set env vars:
-   `GROQ_API_KEY`, `GROQ_MODEL`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `APP_TIMEZONE`
-   (plus the Telegram ones below, if you want the bot)
-5. Deploy. On your phone, open the URL and "Add to Home Screen" to install it like an app.
+Message your bot and send `/start`. The first chat to do this claims the bot; everyone else
+is ignored, so it's safe if someone finds the username.
 
-If the deployment URL is public, anyone who finds it can use the app. For a personal deployment,
-consider keeping the Vercel URL private or enabling [Vercel Deployment Protection](https://vercel.com/docs/security/deployment-protection).
+It'll offer to set up your stats. Tap **👤 Set up my stats** and answer six quick questions:
 
-> **Note:** Deployment Protection also blocks Telegram's webhook calls. If you turn it on,
-> add `/api/telegram/*` as a public path, or the bot will go silent.
+```
+BiteLog  First up — what should I use for the calculation?
+         [ Male ]  [ Female ]
+BiteLog  How old are you? (just the number)
+You      27
+BiteLog  Your height in cm? (e.g. 178)
+You      178cm
+BiteLog  And your weight in kg? (e.g. 72)
+You      72 kg
+BiteLog  How active is a normal day, not counting workouts?
+         [ sedentary — Desk job, little walking ]
+         [ light — On your feet a bit, light walking ]  …
+BiteLog  Last one — how big a daily deficit are you aiming for?
+         [ 300 (slow) ] [ 500 (steady) ] [ 750 (fast) ] [ Skip ]
+BiteLog  All set 🎉  Maintenance: 2288 kcal/day before exercise
+```
 
-## Telegram bot
+Prefer one message? Just type it: *"male, 27, 178cm, 72kg, lightly active"*. Same result.
 
-The bot is a nutrition assistant in your DMs: send a meal photo and it logs the breakdown,
-ask it questions about your day, and it checks in around mealtimes. It writes to the same
-database as the web app, so both stay in sync.
+> **Pick the activity level that describes your day _without_ deliberate exercise.**
+> Workouts you log are added on top. Choosing "very active" *and* logging every gym session
+> counts the same effort twice — that's how people end up thinking they have 800 more
+> calories to spend than they do.
 
-### Setup
+### Logging a meal
 
-1. **Create the bot.** In Telegram, message [@BotFather](https://t.me/BotFather) → `/newbot`
-   → pick a display name and a username ending in `bot`. He replies with a token.
-2. **Paste the token** into `.env` as `TELEGRAM_BOT_TOKEN`, and set `PUBLIC_URL` to your
-   deployed https URL. `TELEGRAM_WEBHOOK_SECRET` and `CRON_SECRET` are already filled in.
-3. **Add all four** to Vercel's env vars and redeploy.
-4. **Register the webhook:** `npm run telegram:setup`
-5. **Send `/start`** to your bot. The first chat to do this claims the bot; everyone else is
-   ignored. `/unlink` releases it.
+**Send a photo.** Caption optional. About two seconds later:
+
+```
+🍳 Kaya toast with soft-boiled egg and coffee
+
+• Kaya Toast 2 slices — 360 kcal
+• Soft-boiled Egg 2 eggs — 155 kcal
+• Coffee (Kopi) 1 cup — 120 kcal
+
+635 kcal · P 19g C 66g F 33g
+Today so far: 990 kcal
+        [ ✏️ Fix this ]  [ 🗑 Undo ]
+        [ ⚡️ Deficit ]
+```
+
+**Or type it** — *"chicken rice and iced milo"*, *"just a flat white"*, *"two eggs on toast"*.
+
+**Back-date it** by saying so: *"that was yesterday's dinner"* logs it under yesterday.
+Already logged and on the wrong day? *"I told you that was yesterday"* moves it.
+
+### Logging exercise
+
+Tell it what you burned: *"burnt about 500 calories on an incline walk"*, *"ran 5k, watch
+said 380"*. It logs it and immediately shows your updated deficit.
+
+No number? It asks rather than guessing — your watch or app knows better than a formula.
+
+### Asking questions
+
+Just talk to it. It reads your last 7 days of food and workouts:
+
+- *"how many calories so far?"*
+- *"what did I eat yesterday?"*
+- *"am I in a deficit today?"*
+- *"how much more can I eat today?"*
+- *"how am I doing on protein?"*
+- *"was that a lot of fat?"* — follow-ups work, it remembers the thread
+
+### Commands
+
+| Command | What it shows |
+| --- | --- |
+| `/menu` | Buttons for everything below |
+| `/balance` | Today's energy: eaten, burned, maintenance, deficit |
+| `/today` | Today's meals and totals |
+| `/yesterday` | Yesterday's log |
+| `/week` | 7 days, per-day macros and averages |
+| `/profile` | Your stats and maintenance calories |
+| `/undo` | Remove the last thing logged |
+| `/reset` | Forget the conversation (your food log is untouched) |
+| `/help` | Quick reference |
+| `/unlink` | Release the bot so another chat can claim it |
 
 ### Check-ins
 
-Times live in `SLOTS` in [`src/lib/telegram/schedule.ts`](src/lib/telegram/schedule.ts) —
-09:00 breakfast, 12:30 lunch, 19:00 dinner, 21:30 wrap-up, local to `APP_TIMEZONE`. Edit that
-array to change them; nothing else needs updating.
+The bot messages you around **09:00, 12:30, 19:00** and sends a **21:30** wrap-up.
 
-The bot **skips a check-in if that meal is already logged**, so it only nags when it's useful.
+It **skips a check-in if you've already logged that meal**, so it only speaks when it's
+useful. Times live in `SLOTS` in [`src/lib/telegram/schedule.ts`](src/lib/telegram/schedule.ts) —
+edit that array and nothing else needs changing.
 
-`.github/workflows/checkin.yml` drives the schedule from GitHub Actions (free, and it can run
-more than twice a day, unlike Vercel's Hobby cron). Add two repository secrets under
-**Settings → Secrets and variables → Actions**:
+---
 
-| Secret | Value |
+## Correcting mistakes
+
+The AI gets things wrong. Two ways to fix it, and **corrections update the entry in place** —
+the meal keeps its date and position in your log.
+
+**Tap ✏️ Fix this**, then say what was wrong.
+
+**Or just say it.** The bot understands that you're disputing its last breakdown rather than
+describing a new meal:
+
+| You say | What happens |
 | --- | --- |
-| `APP_URL` | your deployed https URL |
-| `CRON_SECRET` | same value as in `.env` |
+| *"that's french toast, not kaya toast"* | Swaps the item, recalculates |
+| *"there were 3 slices not 2"* | Scales the portion |
+| *"the kopi was kopi-o kosong"* | 120 kcal → 5 kcal |
+| *"you missed the butter"* | Adds it |
+| *"no egg, I didn't have that"* | Removes it |
+| *"wrong"* | Asks what to change |
 
-The endpoint works out which slot is due from the current time rather than trusting the caller,
-and accepts a slot for 100 minutes after its time — so a late or repeated Actions run still
-does the right thing, and can never send the same check-in twice.
+It re-estimates the **whole meal**, keeping the items you didn't dispute, and treats your
+word as authoritative — you were there and the model wasn't.
 
-To test one by hand: Actions → "Meal check-ins" → Run workflow.
+Corrected foods are also remembered: log that food again and your numbers are used instead
+of a fresh guess.
 
-### Calorie deficit
+If the entry is beyond saving, **🗑 Undo** deletes it outright.
 
-Tell the bot your stats once — "I'm male, 27, 178cm, 72kg, lightly active" — and it works out
-your maintenance calories with the Mifflin-St Jeor equation. `/balance` then shows the day's
-energy: eaten, burned, maintenance, and whether you're in deficit or surplus.
+---
 
-Pick the activity level that describes your day **without** deliberate exercise. Logged
-workouts are added on top, so choosing "very active" *and* logging every gym session counts
-the same effort twice.
+## Calorie deficit
 
-Log workouts by telling the bot: *"burnt about 500 calories on an incline walk"*.
+`/balance` puts food and exercise together:
 
-### Getting calories burned in automatically
+```
+Today — energy
+
+🍽 Eaten        975 kcal
+   P 30g · C 47g · F 72g
+
+🔥 Burned       520 kcal
+   Incline walk — 520
+
+⚡️ Maintenance 2288 kcal (before exercise)
+   Total out   2808 kcal
+
+✅ 1833 kcal deficit
+At this rate: −1.67 kg/week
+Target was 500 — you're 1333 past it.
+```
+
+Maintenance uses the **Mifflin-St Jeor** equation (BMR from sex, age, height, weight) times
+an activity multiplier. Logged workouts are added on top of that baseline.
+
+Weekly rate assumes 7,700 kcal ≈ 1 kg of body fat. Treat it as a projection, not a promise:
+formula-based maintenance carries roughly ±10–15% error. If the scale disagrees with the
+arithmetic over 2–3 weeks, believe the scale and adjust your activity level.
+
+---
+
+## Automatic exercise import
 
 `POST /api/activity` accepts burned calories from anything that can send JSON:
 
@@ -121,44 +213,179 @@ curl -X POST "$APP_URL/api/activity" \
   -d '{"description":"Incline walk","calories":520,"externalId":"health-2026-07-30"}'
 ```
 
-Send an `externalId` and re-posting the same workout is a no-op, so a repeating automation is
-safe to run as often as you like.
-
-**Apple Health** has no cloud API — HealthKit data never leaves the device on its own. The way
-in is an iOS Shortcut:
-
-1. Shortcuts app → Automation → **Time of Day**, e.g. 22:00 daily
-2. **Find Health Samples** → Active Energy → today → Sum
-3. **Get Contents of URL** → your `$APP_URL/api/activity`, method POST,
-   header `Authorization: Bearer <CRON_SECRET>`, JSON body with `calories` set to the sum
-   from step 2 and `externalId` set to something like `health-` plus today's date
-
-**Strava** does have a proper API (OAuth + activity webhooks) and could push workouts here
-automatically — it just isn't built yet.
-
-**Hevy** exposes an API on its paid tier. **Strong** has no API at all; it only exports CSV.
-For both, telling the bot what you burned is the practical route.
-
-### What it understands
-
-| You send | It does |
+| Field | |
 | --- | --- |
-| a meal photo (caption optional) | analyses it, logs it, shows the breakdown with an Undo button |
-| "chicken rice and iced milo" | same, from the text |
-| "that was yesterday's dinner" | logs or moves it to the right day |
-| "burnt 500 calories on incline walks" | logs the workout and updates the deficit |
-| "I'm male, 27, 178cm, 72kg, lightly active" | saves your stats and works out maintenance |
-| "am I in a deficit?" | answers from food, workouts and maintenance together |
-| `/menu` | buttons: Today, Yesterday, Deficit, 7 days, Profile, Undo |
-| `/balance` | today's energy in and out |
-| `/week` | 7 days with per-day macros |
-| `/undo` | removes the last meal |
+| `calories` | **required**, the number burned |
+| `description` | label shown in the log (default `"Workout"`) |
+| `at` | ISO string or epoch ms (default now) — use it to back-date |
+| `externalId` | send one and re-posting the same workout is a **no-op**, so a repeating automation is safe |
+| `source` | free-form tag (default `"shortcuts"`) |
 
-Free-text messages are routed by a classifier (log a meal vs. ask a question vs. small talk);
-it falls back to logging, which is the common case.
+### Apple Health (iOS Shortcut)
 
-## Notes
+Apple Health has **no cloud API** — HealthKit data never leaves the device on its own. The
+way in is a Shortcuts automation:
 
-- Meal photos are compressed in the browser, analyzed once, and discarded — only a small
-  thumbnail is stored in the database.
-- If AI analysis fails (or `GROQ_API_KEY` is empty), manual entry still works.
+1. **Shortcuts → Automation → Time of Day**, e.g. 22:00 daily
+2. **Find Health Samples** → Active Energy → today → **Sum**
+3. **Get Contents of URL** → `https://<your-app>/api/activity`
+   - Method **POST**
+   - Header `Authorization: Bearer <CRON_SECRET>`
+   - JSON body: `calories` = the sum from step 2, `externalId` = `health-` + today's date
+
+The `externalId` means running it more than once a day is harmless.
+
+### Other apps
+
+| App | Status |
+| --- | --- |
+| **Strava** | Has a proper OAuth + webhook API and could push workouts in automatically. **Not built yet.** |
+| **Hevy** | API is available on the paid tier only. |
+| **Strong** | No API at all — CSV export only. |
+
+For anything unsupported, telling the bot what you burned takes five seconds.
+
+---
+
+## Setup
+
+### 1. Local
+
+```bash
+npm install
+cp .env.example .env     # fill in GROQ_API_KEY
+npm run db:push          # creates local.db
+npm run dev              # http://localhost:3000
+```
+
+`GROQ_API_KEY` comes from https://console.groq.com/keys — the free tier is enough.
+
+### 2. Deploy (Vercel + Turso)
+
+1. Push to GitHub.
+2. Create a Turso database (free tier):
+   ```bash
+   turso db create bitelog
+   turso db show bitelog --url        # → DATABASE_URL
+   turso db tokens create bitelog     # → DATABASE_AUTH_TOKEN
+   ```
+3. Apply the schema: put both values in `.env`, run `npm run db:push`, then restore
+   `DATABASE_URL=file:local.db` for local dev.
+4. Import at https://vercel.com/new and set the env vars below.
+5. Deploy. On your phone, open the URL and **Add to Home Screen**.
+
+| Env var | |
+| --- | --- |
+| `GROQ_API_KEY` | Groq API key |
+| `GROQ_MODEL` | a **vision-capable** model (see [How it works](#how-it-works)) |
+| `DATABASE_URL` / `DATABASE_AUTH_TOKEN` | Turso |
+| `APP_TIMEZONE` | day boundaries and check-in times, e.g. `Asia/Singapore` |
+| `TELEGRAM_BOT_TOKEN` | from @BotFather |
+| `PUBLIC_URL` | your deployed https URL, no trailing slash |
+| `TELEGRAM_WEBHOOK_SECRET` | any long random string |
+| `CRON_SECRET` | any long random string |
+
+> ⚠️ Vercel **Deployment Protection** also blocks Telegram's webhook calls. If you enable it,
+> allow `/api/telegram/*` publicly or the bot goes silent.
+
+### 3. Telegram bot
+
+1. Message [@BotFather](https://t.me/BotFather) → `/newbot` → pick a name and a username
+   ending in `bot`. Copy the token.
+2. Put it in `.env` as `TELEGRAM_BOT_TOKEN`, set `PUBLIC_URL` to your deployed URL.
+3. Add all four Telegram vars to Vercel and redeploy.
+4. `npm run telegram:setup` — registers the webhook and the command menu.
+5. Send `/start` to your bot.
+
+Re-run `npm run telegram:setup` whenever the command list changes or you redeploy to a new URL.
+
+### 4. Check-in schedule
+
+Check-ins run from GitHub Actions ([`.github/workflows/checkin.yml`](.github/workflows/checkin.yml)),
+because Vercel's Hobby plan caps cron at two runs a day and we need four.
+
+Add two repository secrets under **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+| --- | --- |
+| `APP_URL` | your deployed https URL |
+| `CRON_SECRET` | same value as in `.env` |
+
+Test it by hand: **Actions → Meal check-ins → Run workflow**. A response of
+`{"sent":false,"reason":"no slot due"}` means the plumbing works and it simply isn't
+mealtime.
+
+---
+
+## How it works
+
+```
+Telegram ──► /api/telegram/webhook ──► router (intent) ──┬─► vision model ──► meal log
+                                                          ├─► activity log
+                                                          ├─► profile
+                                                          └─► conversation (log as context)
+
+GitHub Actions ──► /api/telegram/checkin ──► "had lunch yet?"
+iOS Shortcut  ──► /api/activity          ──► exercise log
+Browser       ──► Next.js dashboard      ──► same database
+```
+
+**Stack:** Next.js (App Router) · Tailwind · Drizzle ORM + libSQL/Turso · Groq
+(OpenAI-compatible) · Zod · Vitest
+
+### The AI model
+
+`GROQ_MODEL` **must accept image input** — check `input_modalities` at
+https://console.groq.com/docs/models. Groq retires models regularly; a sudden 404 on every
+photo is why. The default lives in `DEFAULT_GROQ_MODEL` in
+[`src/lib/ai/analyze.ts`](src/lib/ai/analyze.ts).
+
+**Reasoning is deliberately disabled.** These models otherwise spend their completion budget
+"thinking", which truncates the JSON mid-object and makes a photo take ~35s instead of ~1.2s.
+
+Groq's free tier allows 8,000 tokens/minute; a photo costs ~2,000, so about four photo
+analyses per minute. Past that the bot says to wait a minute.
+
+### Design notes
+
+- **The webhook always returns 200.** Telegram retries non-200 responses with the same
+  update, which would double-log a meal.
+- **Check-in slots are claimed via a primary key** before sending, so overlapping scheduler
+  runs can't both fire. A slot stays valid for 100 minutes so a late Actions run still works.
+- **The bot derives the due slot from the current time** rather than trusting the caller.
+- **Photos aren't stored** from Telegram — corrections re-estimate from the previous
+  breakdown plus your words, which is why your correction is treated as authoritative.
+- **Only one chat can use the bot**, claimed by the first `/start`.
+
+### Tests
+
+```bash
+npm test        # 112 tests
+```
+
+Energy maths is checked against known Mifflin-St Jeor values. The bot flow runs end-to-end
+against a throwaway SQLite file with the Telegram transport and model stubbed, covering
+linking, stranger rejection, logging, corrections, back-dating, guided setup, and undo.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause |
+| --- | --- |
+| **Bot silent** | Check `curl -s https://api.telegram.org/bot<TOKEN>/getWebhookInfo`. A `last_error_message` of 404 means `PUBLIC_URL` was wrong when you ran setup, or the code isn't deployed. |
+| **Every photo fails** | `GROQ_MODEL` names a retired or text-only model. Check `input_modalities` in Groq's model list. |
+| **"Too many photos"** | Free-tier rate limit — ~4 photos/minute. Wait a minute. |
+| **No check-ins** | GitHub Actions secrets `APP_URL` / `CRON_SECRET` missing, or the meal was already logged (by design). |
+| **Deficit says stats unknown** | Run `/profile`. |
+| **Numbers look wrong** | Correct it — *"3 slices not 2"*. It learns that food for next time. |
+| **Local build runs out of memory** | Delete `.next` and retry. |
+
+---
+
+## Privacy
+
+Single-user by design. The bot answers one Telegram chat and ignores everything else.
+Meal photos sent to Telegram are analyzed and discarded — not stored in the database.
+Photos uploaded through the web app keep a small thumbnail only. Your food log lives in your
+own Turso database; meal text and photos are sent to Groq for analysis.

@@ -4,7 +4,13 @@ import type { ChatMessage } from "@/lib/ai/types";
 import { ACTIVITY_MULTIPLIERS, type ActivityLevel, type Sex } from "@/lib/energy";
 import type { MealType } from "@/lib/meals";
 
-export type Intent = "log_meal" | "log_activity" | "set_profile" | "amend_date" | "converse";
+export type Intent =
+  | "log_meal"
+  | "log_activity"
+  | "set_profile"
+  | "amend_date"
+  | "correct_meal"
+  | "converse";
 
 export interface Routing {
   intent: Intent;
@@ -32,7 +38,7 @@ const ROUTER_PROMPT = `You route messages sent to a personal health assistant th
 food eaten and calories burned.
 
 Reply with ONLY a JSON object:
-{"intent": "log_meal"|"log_activity"|"set_profile"|"amend_date"|"converse",
+{"intent": "log_meal"|"log_activity"|"set_profile"|"amend_date"|"correct_meal"|"converse",
  "day_offset": number,
  "meal_type": "breakfast"|"lunch"|"dinner"|"snack"|null,
  "burned_calories": number|null,
@@ -42,9 +48,23 @@ Reply with ONLY a JSON object:
              "activity_level":"sedentary"|"light"|"moderate"|"active"|"very_active",
              "target_deficit":number} | null}
 
+THE MOST IMPORTANT DISTINCTION: your previous message in this conversation is usually a meal
+breakdown you just logged. If the user's new message disputes ANY part of it — the food, the
+amount, an ingredient, a drink, or just says "wrong" or "no" — that is "correct_meal", NEVER
+"log_meal". They are fixing your entry, not eating something new.
+
 intent:
-- "log_meal": they are telling you what they ate or drank.
+- "correct_meal": correcting WHAT the food was, or how much, in the entry you just logged.
+  "that's not kaya toast, it's french toast" -> correct_meal
+  "there were 3 slices not 2" -> correct_meal
+  "the kopi was kopi-o kosong, no milk or sugar" -> correct_meal
+  "you missed the butter" -> correct_meal
+  "no egg, I didn't have that" -> correct_meal
+  "wrong" / "that's off" / "nope" -> correct_meal
+  Naming a food does NOT make it log_meal if it contradicts what you just said.
+- "log_meal": they are telling you about food you have NOT already logged.
   "chicken rice", "I had two eggs and toast", "nasi lemak for lunch".
+  Use this when it reads as a new, separate thing they ate — not a fix to your last entry.
 - "log_activity": they are telling you about exercise or calories burned.
   "burnt 500 calories on incline walk", "ran 5k, about 400 cals", "did legs at the gym, 300kcal".
   Put the number in burned_calories and a short label in activity ("Incline walk").
@@ -58,7 +78,7 @@ intent:
   "aim for a 500 deficit" -> {"intent":"set_profile","profile":{"target_deficit":500}}
   Use "age" when they give an age and "birth_year" when they give a year.
   Fill only the fields they actually mention; omit the rest.
-- "amend_date": correcting the day of something ALREADY logged.
+- "amend_date": correcting the DAY of something already logged.
   "that was yesterday", "I told you the sausage platter was from yesterday".
   Only when they refer back to an earlier entry rather than naming new food.
 - "converse": questions about their log, maintenance, deficit, or anything else.
@@ -66,7 +86,10 @@ intent:
 
 day_offset: 0 unless they say otherwise. "yesterday" or "last night" = -1. Only 0 or negative.
 meal_type: only when stated outright, otherwise null.
-Set unused fields to null.`;
+Set unused fields to null.
+
+A bare food name with no question mark is "log_meal" — unless it contradicts the breakdown
+you just gave, in which case it is "correct_meal".`;
 
 const PERSONA = `You are BiteLog, a warm, concise personal nutrition assistant chatting on Telegram.
 
@@ -89,11 +112,13 @@ function extractJson(raw: string): unknown {
 }
 
 const MEAL_TYPES = new Set(["breakfast", "lunch", "dinner", "snack"]);
+// Must list every Intent — an unlisted one is silently downgraded to log_meal.
 const INTENTS = new Set<Intent>([
   "log_meal",
   "log_activity",
   "set_profile",
   "amend_date",
+  "correct_meal",
   "converse",
 ]);
 const SEXES = new Set(["male", "female"]);

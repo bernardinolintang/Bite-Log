@@ -427,6 +427,93 @@ describe("telegram bot flow", () => {
     expect(analyzeMeal).toHaveBeenCalledOnce();
   });
 
+  it("corrects a logged meal in place when told it's wrong", async () => {
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "Kaya toast with soft-boiled egg and coffee",
+      no_food: false,
+      clarification_questions: [],
+      items: [
+        { ...toastAnalysis.items[0], food_name: "Kaya Toast", quantity_desc: "2 slices", calories: 360 },
+      ],
+    });
+    await handleUpdate(textUpdate(OWNER, "kaya toast set"));
+    const [logged] = await getRecentMeals(1);
+    expect(logged.items[0].foodName).toBe("Kaya Toast");
+
+    // Now dispute it.
+    sent.length = 0;
+    routeMessage.mockResolvedValue(route("correct_meal"));
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "French toast with soft-boiled egg and coffee",
+      no_food: false,
+      clarification_questions: [],
+      items: [
+        { ...toastAnalysis.items[0], food_name: "French Toast", quantity_desc: "3 slices", calories: 540 },
+      ],
+    });
+    await handleUpdate(textUpdate(OWNER, "that's french toast, and there were 3 slices"));
+
+    // Same meal row, corrected contents — not a second entry.
+    const after = await getRecentMeals(5);
+    expect(after.filter((m) => m.id === logged.id)).toHaveLength(1);
+    const fixed = after.find((m) => m.id === logged.id)!;
+    expect(fixed.items).toHaveLength(1);
+    expect(fixed.items[0].foodName).toBe("French Toast");
+    expect(fixed.items[0].calories).toBe(540);
+    expect(sent[0].text).toContain("Updated");
+
+    // The model was told what it previously said, plus the correction.
+    const arg = analyzeMeal.mock.calls.at(-1)![0] as { previous?: string; correction?: string };
+    expect(arg.previous).toContain("Kaya Toast");
+    expect(arg.correction).toContain("french toast");
+  });
+
+  it("routes the ✏️ Fix button through to a correction", async () => {
+    const [meal] = await getRecentMeals(1);
+    sent.length = 0;
+    await handleUpdate({
+      callback_query: {
+        id: "f1",
+        data: `fix:${meal.id}`,
+        message: { message_id: 3, chat: { id: OWNER } },
+      },
+    });
+    expect(sent[0].text).toContain("What did I get wrong");
+
+    // The next message is the correction, without needing the router.
+    sent.length = 0;
+    routeMessage.mockReset();
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "Toast, no butter",
+      no_food: false,
+      clarification_questions: [],
+      items: [{ ...toastAnalysis.items[0], food_name: "Dry Toast", calories: 120 }],
+    });
+    await handleUpdate(textUpdate(OWNER, "no butter on that"));
+
+    expect(routeMessage).not.toHaveBeenCalled();
+    const fixed = (await getRecentMeals(5)).find((m) => m.id === meal.id)!;
+    expect(fixed.items[0].foodName).toBe("Dry Toast");
+  });
+
+  it("keeps the entry when a correction would empty it", async () => {
+    const [meal] = await getRecentMeals(1);
+    const before = meal.items.length;
+    sent.length = 0;
+    routeMessage.mockResolvedValue(route("correct_meal"));
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "",
+      no_food: true,
+      items: [],
+      clarification_questions: [],
+    });
+    await handleUpdate(textUpdate(OWNER, "actually none of that"));
+    expect(sent[0].text).toContain("Undo");
+    const still = (await getRecentMeals(5)).find((m) => m.id === meal.id)!;
+    expect(still.items).toHaveLength(before);
+  });
+
   it("clears conversation memory with /reset but keeps the meal log", async () => {
     const mealsBefore = (await getRecentMeals(50)).length;
     await handleUpdate(textUpdate(OWNER, "/reset"));

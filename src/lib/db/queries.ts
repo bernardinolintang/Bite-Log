@@ -230,6 +230,22 @@ export async function setMealDate(id: string, loggedAt: number, loggedDate: stri
 }
 
 /**
+ * Swap a meal's items for a corrected set, keeping the same meal row so its date,
+ * type and place in the log are preserved.
+ */
+export async function replaceMealItems(
+  mealId: string,
+  rows: (typeof mealItems.$inferInsert)[],
+  aiSummary?: string | null,
+): Promise<void> {
+  await db.delete(mealItems).where(eq(mealItems.mealId, mealId));
+  if (rows.length) await db.insert(mealItems).values(rows);
+  if (aiSummary !== undefined) {
+    await db.update(meals).set({ aiSummary }).where(eq(meals.id, mealId));
+  }
+}
+
+/**
  * Claims a check-in slot for a date. Returns false when it was already claimed, so two
  * overlapping scheduler runs cannot both send. The primary key does the arbitrating.
  */

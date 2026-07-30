@@ -75,6 +75,39 @@ export const telegramChats = sqliteTable("telegram_chats", {
   linkedAt: integer("linked_at").notNull(),
 });
 
+/** Small key/value scratchpad — currently just "which profile field am I waiting for". */
+export const botState = sqliteTable("bot_state", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/** Body stats used to estimate maintenance calories. Single row, id 1. */
+export const profile = sqliteTable("profile", {
+  id: integer("id").primaryKey(), // always 1
+  sex: text("sex"), // male | female
+  birthYear: integer("birth_year"),
+  heightCm: real("height_cm"),
+  weightKg: real("weight_kg"),
+  /** Daily life EXCLUDING logged workouts — those are added on top. */
+  activityLevel: text("activity_level"),
+  /** kcal/day the user wants to be under maintenance. */
+  targetDeficit: real("target_deficit"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/** Calories burned through exercise, from the bot, Apple Health, or any other source. */
+export const activities = sqliteTable("activities", {
+  id: text("id").primaryKey(),
+  source: text("source").notNull(), // telegram | shortcuts | manual | strava
+  /** Dedupe key for external sources that may re-send the same workout. */
+  externalId: text("external_id").unique(),
+  description: text("description").notNull(),
+  calories: real("calories").notNull(),
+  loggedAt: integer("logged_at").notNull(),
+  loggedDate: text("logged_date").notNull(),
+});
+
 /** Recent Telegram turns, so the assistant can follow a thread instead of answering blind. */
 export const chatMessages = sqliteTable("chat_messages", {
   id: text("id").primaryKey(),

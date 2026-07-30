@@ -38,11 +38,24 @@ export function buildMessages(input: AnalyzeInput): ChatMessage[] {
   const lines: string[] = [`Meal type: ${input.mealType}.`];
   if (input.description) lines.push(`The user describes the meal as: "${input.description}"`);
   if (input.imageDataUrl) lines.push("A photo of the meal is attached.");
-  else lines.push("No photo is available; estimate from the description alone.");
+  else if (!input.previous) lines.push("No photo is available; estimate from the description alone.");
   if (input.clarifications?.length) {
     lines.push("The user answered your earlier clarification questions:");
     for (const c of input.clarifications) lines.push(`- Q: ${c.question} A: ${c.answer}`);
     lines.push("Incorporate these answers and do not ask them again.");
+  }
+  if (input.previous) {
+    lines.push(
+      "",
+      "You previously estimated this meal as:",
+      input.previous,
+      "",
+      `The user says that is wrong: "${input.correction ?? ""}"`,
+      "Return the FULL corrected breakdown, not just the changed part.",
+      "Trust the user over your own earlier guess — they were there and you were not.",
+      "Keep the items they did not dispute as they were, unless their correction changes them.",
+      "Drop items they say were not there; add items they say were.",
+    );
   }
   const text = lines.join("\n");
   const content: string | ContentPart[] = input.imageDataUrl

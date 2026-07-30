@@ -49,9 +49,11 @@ if (!secret) console.log("  ⚠ TELEGRAM_WEBHOOK_SECRET is unset — anyone who 
 const cmds = await api("setMyCommands", {
   commands: [
     { command: "menu", description: "Buttons for the common stuff" },
+    { command: "balance", description: "Today's deficit: eaten vs burned" },
     { command: "today", description: "Today's log and totals" },
     { command: "yesterday", description: "Yesterday's log" },
-    { command: "week", description: "Last 7 days" },
+    { command: "week", description: "Last 7 days with macros" },
+    { command: "profile", description: "Your stats and maintenance calories" },
     { command: "undo", description: "Remove the last meal logged" },
     { command: "reset", description: "Forget the conversation so far" },
     { command: "help", description: "What I can do" },

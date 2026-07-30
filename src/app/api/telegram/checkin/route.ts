@@ -17,16 +17,18 @@ const TZ = process.env.APP_TIMEZONE || "Asia/Singapore";
  * or repeated run cannot misfire.
  */
 export async function GET(req: NextRequest) {
+  // Parse from req.url rather than req.nextUrl so this stays a plain-Request handler.
+  const params = new URL(req.url).searchParams;
   const secret = process.env.CRON_SECRET;
   if (secret) {
     const auth = req.headers.get("authorization");
-    const qs = req.nextUrl.searchParams.get("key");
+    const qs = params.get("key");
     if (auth !== `Bearer ${secret}` && qs !== secret) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
   }
 
-  const forced = req.nextUrl.searchParams.get("slot");
+  const forced = params.get("slot");
   const slot: Slot | null = forced
     ? (SLOTS.find((s) => s.name === forced) ?? null)
     : dueSlot(Date.now(), TZ);

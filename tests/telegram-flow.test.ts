@@ -38,10 +38,19 @@ vi.mock("@/lib/telegram/agent", () => ({
   converse: (...a: unknown[]) => converse(...a),
 }));
 
-const route = (intent: string, dayOffset = 0, mealType: string | null = null) => ({
+const route = (
+  intent: string,
+  dayOffset = 0,
+  mealType: string | null = null,
+  extra: Record<string, unknown> = {},
+) => ({
   intent,
   dayOffset,
   mealType,
+  burnedCalories: null,
+  activity: null,
+  profile: null,
+  ...extra,
 });
 
 const OWNER = "12345";
@@ -100,6 +109,11 @@ beforeAll(async () => {
     `CREATE TABLE telegram_chats (id INTEGER PRIMARY KEY, chat_id TEXT NOT NULL, username TEXT, linked_at INTEGER NOT NULL)`,
     `CREATE TABLE checkins (id TEXT PRIMARY KEY, slot TEXT NOT NULL, sent_at INTEGER NOT NULL)`,
     `CREATE TABLE chat_messages (id TEXT PRIMARY KEY, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+    `CREATE TABLE profile (id INTEGER PRIMARY KEY, sex TEXT, birth_year INTEGER, height_cm REAL, weight_kg REAL,
+      activity_level TEXT, target_deficit REAL, updated_at INTEGER NOT NULL)`,
+    `CREATE TABLE activities (id TEXT PRIMARY KEY, source TEXT NOT NULL, external_id TEXT UNIQUE,
+      description TEXT NOT NULL, calories REAL NOT NULL, logged_at INTEGER NOT NULL, logged_date TEXT NOT NULL)`,
+    `CREATE TABLE bot_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
   ]);
   ({ handleUpdate } = await import("@/lib/telegram/handle"));
   ({ getRecentMeals } = await import("@/lib/db/queries"));
@@ -115,11 +129,13 @@ beforeEach(() => {
 });
 
 describe("telegram bot flow", () => {
-  it("links the first chat that sends /start", async () => {
+  it("links the first chat that sends /start and nudges profile setup", async () => {
     await handleUpdate(textUpdate(OWNER, "/start"));
-    expect(sent).toHaveLength(1);
     expect(sent[0].chatId).toBe(OWNER);
     expect(sent[0].text).toContain("food journal");
+    // No stats yet, so it offers to collect them.
+    expect(JSON.stringify(sent[0].buttons)).toContain("setup:start");
+    expect(sent.at(-1)!.text).toContain("maintenance calories");
   });
 
   it("ignores everyone else once linked", async () => {
@@ -134,7 +150,13 @@ describe("telegram bot flow", () => {
     expect(sent[0].text).toContain("private bot");
   });
 
-  it("logs a described meal and offers an undo button", async () => {
+  async function confirmPreview(cbId = `confirm-${Math.random()}`) {
+    await handleUpdate({
+      callback_query: { id: cbId, data: "confirm_meal", message: { message_id: 999, chat: { id: OWNER } } },
+    });
+  }
+
+  it("shows an unsaved preview first, then logs only once confirmed", async () => {
     routeMessage.mockResolvedValue(route("log_meal"));
     analyzeMeal.mockResolvedValue(toastAnalysis);
     await handleUpdate(textUpdate(OWNER, "two slices of toast"));
@@ -142,11 +164,92 @@ describe("telegram bot flow", () => {
     expect(analyzeMeal).toHaveBeenCalledOnce();
     expect(sent[0].text).toContain("Toast and eggs");
     expect(sent[0].text).toContain("160");
+    expect(sent[0].text).toContain("does this look right");
+    expect(JSON.stringify(sent[0].buttons)).toContain("confirm_meal");
+    expect(JSON.stringify(sent[0].buttons)).toContain("discard_meal");
+
+    const before = await getRecentMeals(50);
+
+    sent.length = 0;
+    await confirmPreview();
+    expect(sent[0].text).toContain("Logged");
     expect(JSON.stringify(sent[0].buttons)).toContain("del:");
 
-    const [meal] = await getRecentMeals(1);
-    expect(meal.aiSummary).toBe("Toast and eggs");
-    expect(meal.items).toHaveLength(1);
+    const after = await getRecentMeals(50);
+    expect(after.length).toBe(before.length + 1);
+    expect(after[0].aiSummary).toBe("Toast and eggs");
+    expect(after[0].items).toHaveLength(1);
+  });
+
+  it("discards a preview without saving anything", async () => {
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue(toastAnalysis);
+    await handleUpdate(textUpdate(OWNER, "two slices of toast"));
+    const before = await getRecentMeals(50);
+
+    sent.length = 0;
+    await handleUpdate({
+      callback_query: { id: "d1", data: "discard_meal", message: { message_id: 2, chat: { id: OWNER } } },
+    });
+    expect(sent[0].text).toContain("discarded");
+    expect(await getRecentMeals(50)).toHaveLength(before.length);
+  });
+
+  it("treats a reply to a pending preview as a correction, not a save", async () => {
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue(toastAnalysis);
+    await handleUpdate(textUpdate(OWNER, "toast"));
+    const before = await getRecentMeals(50);
+
+    sent.length = 0;
+    routeMessage.mockResolvedValue(route("correct_meal"));
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "Toast, no butter",
+      no_food: false,
+      clarification_questions: [],
+      items: [{ ...toastAnalysis.items[0], food_name: "Dry Toast", calories: 120 }],
+    });
+    await handleUpdate(textUpdate(OWNER, "no butter on that"));
+
+    expect(sent[0].text).toContain("Updated");
+    expect(sent[0].text).toContain("still not logged");
+    expect(JSON.stringify(sent[0].buttons)).toContain("confirm_meal");
+    expect(await getRecentMeals(50)).toHaveLength(before.length); // still nothing saved
+
+    sent.length = 0;
+    await confirmPreview();
+    const after = await getRecentMeals(50);
+    expect(after.length).toBe(before.length + 1);
+    expect(after[0].items[0].foodName).toBe("Dry Toast");
+  });
+
+  it("abandons a stale preview when the next message is a new, unrelated meal", async () => {
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue(toastAnalysis);
+    await handleUpdate(textUpdate(OWNER, "toast")); // creates a preview, never confirmed
+    const before = await getRecentMeals(50);
+
+    sent.length = 0;
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "Chicken rice",
+      no_food: false,
+      clarification_questions: [],
+      items: [{ ...toastAnalysis.items[0], food_name: "Chicken Rice", calories: 600 }],
+    });
+    await handleUpdate(textUpdate(OWNER, "chicken rice"));
+
+    expect(sent[0].text).toContain("Chicken rice");
+    expect(JSON.stringify(sent[0].buttons)).toContain("confirm_meal");
+    expect(await getRecentMeals(50)).toHaveLength(before.length); // still nothing saved
+
+    sent.length = 0;
+    await confirmPreview();
+    const after = await getRecentMeals(50);
+    // Exactly one new row (the chicken rice) — the abandoned toast preview
+    // was never saved, so the count only grew by the confirmed meal.
+    expect(after.length).toBe(before.length + 1);
+    expect(after[0].items[0].foodName).toBe("Chicken Rice");
   });
 
   it("converses instead of logging when the message is not a meal", async () => {
@@ -180,6 +283,7 @@ describe("telegram bot flow", () => {
   });
 
   it("logs a photo, using the caption as extra context", async () => {
+    routeMessage.mockResolvedValue(route("log_meal"));
     analyzeMeal.mockResolvedValue(toastAnalysis);
     await handleUpdate({
       message: {
@@ -196,6 +300,10 @@ describe("telegram bot flow", () => {
       expect.objectContaining({ description: "no butter", imageDataUrl: expect.stringContaining("data:image") }),
     );
     expect(sent[0].text).toContain("Toast and eggs");
+    expect(JSON.stringify(sent[0].buttons)).toContain("confirm_meal");
+
+    // A photo isn't saved until confirmed either.
+    await confirmPreview();
   });
 
   it("removes the meal behind an undo button", async () => {
@@ -231,10 +339,16 @@ describe("telegram bot flow", () => {
     const today = todayString("Asia/Singapore");
 
     await handleUpdate(textUpdate(OWNER, "sausage platter, that was yesterday's dinner"));
+    expect(sent[0].text).toContain("Will log under yesterday");
 
-    const [meal] = await getRecentMeals(1);
-    expect(meal.loggedDate).not.toBe(today);
-    expect(meal.mealType).toBe("dinner");
+    sent.length = 0;
+    await confirmPreview();
+
+    // Not getRecentMeals(1): a back-dated meal has an earlier loggedAt than
+    // same-day meals, so it is never "most recent" once those coexist.
+    // "dinner" is unique to this test, so it's a reliable way to find it.
+    const meal = (await getRecentMeals(50)).find((m) => m.mealType === "dinner");
+    expect(meal?.loggedDate).not.toBe(today);
     expect(sent[0].text).toContain("Logged under yesterday");
   });
 
@@ -242,6 +356,8 @@ describe("telegram bot flow", () => {
     routeMessage.mockResolvedValue(route("log_meal"));
     analyzeMeal.mockResolvedValue(toastAnalysis);
     await handleUpdate(textUpdate(OWNER, "toast"));
+    sent.length = 0;
+    await confirmPreview();
     const [logged] = await getRecentMeals(1);
     expect(logged.loggedDate).toBe(todayString("Asia/Singapore"));
 
@@ -283,6 +399,227 @@ describe("telegram bot flow", () => {
       callback_query: { id: "cb3", data: "day:-1", message: { message_id: 9, chat: { id: OWNER } } },
     });
     expect(sent[0].text).toContain("Yesterday");
+  });
+
+  it("logs a workout and reports the resulting balance", async () => {
+    routeMessage.mockResolvedValue(
+      route("log_activity", 0, null, { burnedCalories: 520, activity: "Incline walk" }),
+    );
+    await handleUpdate(textUpdate(OWNER, "burnt about 520 calories on an incline walk"));
+
+    expect(analyzeMeal).not.toHaveBeenCalled();
+    expect(sent[0].text).toContain("Incline walk");
+    expect(sent[0].text).toContain("520");
+    expect(sent[0].text).toContain("Burned");
+  });
+
+  it("asks for a number when a workout has none", async () => {
+    routeMessage.mockResolvedValue(
+      route("log_activity", 0, null, { burnedCalories: null, activity: "Gym session" }),
+    );
+    await handleUpdate(textUpdate(OWNER, "did legs at the gym"));
+    expect(sent[0].text).toContain("How many calories");
+  });
+
+  it("stores body stats and works out maintenance", async () => {
+    routeMessage.mockResolvedValue(
+      route("set_profile", 0, null, {
+        profile: {
+          sex: "male",
+          birthYear: 1999,
+          heightCm: 175,
+          weightKg: 70,
+          activityLevel: "light",
+        },
+      }),
+    );
+    await handleUpdate(textUpdate(OWNER, "I'm male, born 1999, 175cm, 70kg, lightly active"));
+    expect(sent[0].text).toContain("Maintenance");
+    expect(sent[0].text).toMatch(/2\d{3}/); // a plausible kcal figure
+  });
+
+  it("shows a deficit once stats and a workout are known", async () => {
+    await handleUpdate(textUpdate(OWNER, "/balance"));
+    const text = sent[0].text;
+    expect(text).toContain("Eaten");
+    expect(text).toContain("Burned");
+    expect(text).toContain("Maintenance");
+    expect(text).toMatch(/deficit|surplus/);
+  });
+
+  it("breaks macros down per day in /week", async () => {
+    await handleUpdate(textUpdate(OWNER, "/week"));
+    expect(sent[0].text).toContain("Last 7 days");
+    expect(sent[0].text).toMatch(/P \d+g · C \d+g · F \d+g/);
+    expect(sent[0].text).toContain("Daily average");
+  });
+
+  it("walks through guided profile setup and ends with maintenance", async () => {
+    // Wipe the profile so the flow starts from the top.
+    const { createClient } = await import("@libsql/client");
+    const c = createClient({ url: `file:${DB_FILE}` });
+    await c.execute("DELETE FROM profile");
+    await c.execute("DELETE FROM bot_state");
+
+    sent.length = 0;
+    await handleUpdate(textUpdate(OWNER, "/profile"));
+    expect(sent.at(-1)!.text).toContain("what should I use");
+    expect(JSON.stringify(sent.at(-1)!.buttons)).toContain("setup:sex:male");
+
+    sent.length = 0;
+    await handleUpdate({
+      callback_query: { id: "s1", data: "setup:sex:male", message: { message_id: 1, chat: { id: OWNER } } },
+    });
+    expect(sent.at(-1)!.text).toContain("How old are you");
+
+    // Typed answers must not reach the food model.
+    sent.length = 0;
+    await handleUpdate(textUpdate(OWNER, "27"));
+    expect(analyzeMeal).not.toHaveBeenCalled();
+    expect(sent.at(-1)!.text).toContain("height");
+
+    sent.length = 0;
+    await handleUpdate(textUpdate(OWNER, "178cm"));
+    expect(sent.at(-1)!.text).toContain("weight");
+
+    sent.length = 0;
+    await handleUpdate(textUpdate(OWNER, "72 kg"));
+    expect(sent.at(-1)!.text).toContain("active");
+
+    sent.length = 0;
+    await handleUpdate({
+      callback_query: { id: "s2", data: "setup:activity:light", message: { message_id: 1, chat: { id: OWNER } } },
+    });
+    expect(sent.at(-1)!.text).toContain("deficit");
+
+    sent.length = 0;
+    await handleUpdate({
+      callback_query: { id: "s3", data: "setup:target:500", message: { message_id: 1, chat: { id: OWNER } } },
+    });
+    const done = sent.at(-1)!.text;
+    expect(done).toContain("All set");
+    expect(done).toContain("Maintenance");
+    expect(done).toMatch(/2\d{3}/);
+  });
+
+  it("re-asks when a setup answer is an implausible number", async () => {
+    const { createClient } = await import("@libsql/client");
+    const c = createClient({ url: `file:${DB_FILE}` });
+    await c.execute("DELETE FROM bot_state");
+    await c.execute("INSERT INTO bot_state (key, value, updated_at) VALUES ('awaiting_profile_step','height',0)");
+
+    sent.length = 0;
+    await handleUpdate(textUpdate(OWNER, "900"));
+    expect(sent.at(-1)!.text).toContain("doesn't look right");
+    expect(analyzeMeal).not.toHaveBeenCalled();
+  });
+
+  it("lets a non-answer fall through so the user is never stuck", async () => {
+    const { createClient } = await import("@libsql/client");
+    const c = createClient({ url: `file:${DB_FILE}` });
+    await c.execute("DELETE FROM bot_state");
+    await c.execute("INSERT INTO bot_state (key, value, updated_at) VALUES ('awaiting_profile_step','height',0)");
+
+    sent.length = 0;
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue(toastAnalysis);
+    await handleUpdate(textUpdate(OWNER, "chicken rice"));
+    expect(analyzeMeal).toHaveBeenCalledOnce();
+    // Leaves a preview pending on purpose — clean it up so it can't leak into
+    // the next test (which starts its own, unrelated preview).
+    await confirmPreview();
+  });
+
+  it("corrects an already-saved meal in place when told it's wrong", async () => {
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "Kaya toast with soft-boiled egg and coffee",
+      no_food: false,
+      clarification_questions: [],
+      items: [
+        { ...toastAnalysis.items[0], food_name: "Kaya Toast", quantity_desc: "2 slices", calories: 360 },
+      ],
+    });
+    await handleUpdate(textUpdate(OWNER, "kaya toast set"));
+    // Confirm first — this test is specifically about correcting a meal that's
+    // already SAVED (no pending preview), which is a different code path from
+    // correcting a preview (covered above).
+    sent.length = 0;
+    await confirmPreview();
+    const [logged] = await getRecentMeals(1);
+    expect(logged.items[0].foodName).toBe("Kaya Toast");
+
+    // Now dispute it.
+    sent.length = 0;
+    routeMessage.mockResolvedValue(route("correct_meal"));
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "French toast with soft-boiled egg and coffee",
+      no_food: false,
+      clarification_questions: [],
+      items: [
+        { ...toastAnalysis.items[0], food_name: "French Toast", quantity_desc: "3 slices", calories: 540 },
+      ],
+    });
+    await handleUpdate(textUpdate(OWNER, "that's french toast, and there were 3 slices"));
+
+    // Same meal row, corrected contents — not a second entry.
+    const after = await getRecentMeals(5);
+    expect(after.filter((m) => m.id === logged.id)).toHaveLength(1);
+    const fixed = after.find((m) => m.id === logged.id)!;
+    expect(fixed.items).toHaveLength(1);
+    expect(fixed.items[0].foodName).toBe("French Toast");
+    expect(fixed.items[0].calories).toBe(540);
+    expect(sent[0].text).toContain("Updated");
+
+    // The model was told what it previously said, plus the correction.
+    const arg = analyzeMeal.mock.calls.at(-1)![0] as { previous?: string; correction?: string };
+    expect(arg.previous).toContain("Kaya Toast");
+    expect(arg.correction).toContain("french toast");
+  });
+
+  it("routes the ✏️ Fix button through to a correction", async () => {
+    const [meal] = await getRecentMeals(1);
+    sent.length = 0;
+    await handleUpdate({
+      callback_query: {
+        id: "f1",
+        data: `fix:${meal.id}`,
+        message: { message_id: 3, chat: { id: OWNER } },
+      },
+    });
+    expect(sent[0].text).toContain("What did I get wrong");
+
+    // The next message is the correction, without needing the router.
+    sent.length = 0;
+    routeMessage.mockReset();
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "Toast, no butter",
+      no_food: false,
+      clarification_questions: [],
+      items: [{ ...toastAnalysis.items[0], food_name: "Dry Toast", calories: 120 }],
+    });
+    await handleUpdate(textUpdate(OWNER, "no butter on that"));
+
+    expect(routeMessage).not.toHaveBeenCalled();
+    const fixed = (await getRecentMeals(5)).find((m) => m.id === meal.id)!;
+    expect(fixed.items[0].foodName).toBe("Dry Toast");
+  });
+
+  it("keeps the entry when a correction would empty it", async () => {
+    const [meal] = await getRecentMeals(1);
+    const before = meal.items.length;
+    sent.length = 0;
+    routeMessage.mockResolvedValue(route("correct_meal"));
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "",
+      no_food: true,
+      items: [],
+      clarification_questions: [],
+    });
+    await handleUpdate(textUpdate(OWNER, "actually none of that"));
+    expect(sent[0].text).toContain("Undo");
+    const still = (await getRecentMeals(5)).find((m) => m.id === meal.id)!;
+    expect(still.items).toHaveLength(before);
   });
 
   it("clears conversation memory with /reset but keeps the meal log", async () => {

@@ -1,10 +1,13 @@
 import { desc, eq, inArray, lt } from "drizzle-orm";
 import { db } from "./index";
 import {
+  activities,
+  botState,
   chatMessages,
   checkins,
   mealItems,
   meals,
+  profile,
   settings,
   foodTemplates,
   savedMeals,
@@ -98,6 +101,88 @@ export async function unlinkChat(): Promise<void> {
   await db.delete(telegramChats);
 }
 
+/* ---------- Bot state ---------- */
+
+export async function getState(key: string): Promise<string | null> {
+  const row = await db.query.botState.findFirst({ where: eq(botState.key, key) });
+  return row?.value ?? null;
+}
+
+export async function setState(key: string, value: string): Promise<void> {
+  const row = { key, value, updatedAt: Date.now() };
+  await db.insert(botState).values(row).onConflictDoUpdate({ target: botState.key, set: row });
+}
+
+export async function clearState(key: string): Promise<void> {
+  await db.delete(botState).where(eq(botState.key, key));
+}
+
+/* ---------- Profile & activities ---------- */
+
+export type ProfileRow = typeof profile.$inferSelect;
+export type ActivityRow = typeof activities.$inferSelect;
+
+const EMPTY_PROFILE: ProfileRow = {
+  id: 1,
+  sex: null,
+  birthYear: null,
+  heightCm: null,
+  weightKg: null,
+  activityLevel: null,
+  targetDeficit: null,
+  updatedAt: 0,
+};
+
+export async function getProfile(): Promise<ProfileRow> {
+  return (await db.query.profile.findFirst()) ?? { ...EMPTY_PROFILE };
+}
+
+/** Merge in whichever fields the user supplied, leaving the rest alone. */
+export async function updateProfile(
+  patch: Partial<Omit<ProfileRow, "id" | "updatedAt">>,
+): Promise<ProfileRow> {
+  const current = await getProfile();
+  const next = { ...current, ...patch, id: 1, updatedAt: Date.now() };
+  await db
+    .insert(profile)
+    .values(next)
+    .onConflictDoUpdate({ target: profile.id, set: next });
+  return next;
+}
+
+export async function addActivity(a: {
+  source: string;
+  externalId?: string | null;
+  description: string;
+  calories: number;
+  loggedAt: number;
+  loggedDate: string;
+}): Promise<string | null> {
+  const id = crypto.randomUUID();
+  const res = await db
+    .insert(activities)
+    .values({ id, externalId: a.externalId ?? null, ...a })
+    .onConflictDoNothing();
+  // A conflict means an external source re-sent a workout we already have.
+  return res.rowsAffected > 0 ? id : null;
+}
+
+export async function getActivitiesForDates(dates: string[]): Promise<ActivityRow[]> {
+  if (dates.length === 0) return [];
+  return db.query.activities.findMany({
+    where: inArray(activities.loggedDate, dates),
+    orderBy: [desc(activities.loggedAt)],
+  });
+}
+
+export async function getRecentActivities(limit = 5): Promise<ActivityRow[]> {
+  return db.query.activities.findMany({ orderBy: [desc(activities.loggedAt)], limit });
+}
+
+export async function deleteActivity(id: string): Promise<void> {
+  await db.delete(activities).where(eq(activities.id, id));
+}
+
 /* ---------- Conversation memory ---------- */
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
@@ -142,6 +227,22 @@ export async function clearTurns(): Promise<void> {
 /** Move an already-logged meal to a different day. */
 export async function setMealDate(id: string, loggedAt: number, loggedDate: string): Promise<void> {
   await db.update(meals).set({ loggedAt, loggedDate }).where(eq(meals.id, id));
+}
+
+/**
+ * Swap a meal's items for a corrected set, keeping the same meal row so its date,
+ * type and place in the log are preserved.
+ */
+export async function replaceMealItems(
+  mealId: string,
+  rows: (typeof mealItems.$inferInsert)[],
+  aiSummary?: string | null,
+): Promise<void> {
+  await db.delete(mealItems).where(eq(mealItems.mealId, mealId));
+  if (rows.length) await db.insert(mealItems).values(rows);
+  if (aiSummary !== undefined) {
+    await db.update(meals).set({ aiSummary }).where(eq(meals.id, mealId));
+  }
 }
 
 /**

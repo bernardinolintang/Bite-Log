@@ -27,6 +27,7 @@ import {
   unlinkChat,
   updateProfile,
 } from "@/lib/db/queries";
+import type { FoodItem } from "@/lib/ai/schema";
 import { dbItemToFoodItem, foodItemToDbValues } from "@/lib/convert";
 import { dateStringFor, formatDisplayDate, lastNDates, todayString } from "@/lib/dates";
 import { energyBalance, maintenance } from "@/lib/energy";
@@ -46,6 +47,7 @@ import {
   formatBalance,
   formatDaySummary,
   formatLoggedMeal,
+  formatMealPreview,
   formatProfile,
   formatWeekSummary,
   mealsAsContext,
@@ -89,10 +91,11 @@ export interface TgUpdate {
 const HELP = [
   "Here's what I can do:",
   "",
-  "📸 <b>Send a photo of your meal</b> — I'll break down the calories and macros and log it.",
+  "📸 <b>Send a photo of your meal</b> — I'll break it down and show you before logging anything.",
   "✍️ <b>Or just type it</b> — \"chicken rice and iced milo\".",
+  "✅ <b>Tap Log it</b> to save, or just tell me what's wrong — \"no crab stick\", \"3 slices not 2\" — and I'll redo it before it's saved.",
+  "✏️ <b>Already logged and still wrong?</b> Tap ✏️ Fix this under it, or say \"that's french toast, not kaya\".",
   "🔥 <b>Log workouts</b> — \"burnt 500 calories on an incline walk\".",
-  "✏️ <b>Correct me</b> — \"that's french toast, not kaya\" or \"3 slices not 2\". I'll redo the numbers.",
   "🕐 <b>Back-date it</b> — \"that was yesterday's dinner\" and I'll move it.",
   "❓ <b>Just talk to me</b> — \"am I in a deficit?\", \"how am I doing on protein?\"",
   "",
@@ -129,6 +132,16 @@ function loggedButtons(mealId: string): InlineButton[][] {
       { text: "🗑 Undo", callback_data: `del:${mealId}` },
     ],
     [{ text: "⚡️ Deficit", callback_data: "balance" }],
+  ];
+}
+
+/** Shown under an unconfirmed analysis, before anything is saved. */
+function previewButtons(): InlineButton[][] {
+  return [
+    [
+      { text: "✅ Log it", callback_data: "confirm_meal" },
+      { text: "🗑 Discard", callback_data: "discard_meal" },
+    ],
   ];
 }
 
@@ -169,6 +182,56 @@ function pickPhoto(photos: { file_id: string; file_size?: number; width: number 
   return (ok.length ? ok[ok.length - 1] : sorted[0]).file_id;
 }
 
+/** bot_state key holding the not-yet-saved meal analysis, if any. */
+const PENDING_MEAL = "pending_meal";
+
+/** An analysis the user hasn't confirmed or discarded yet — nothing is saved until they do. */
+interface PendingMeal {
+  mealType: MealType;
+  inputType: "photo" | "text";
+  dayOffset: number;
+  description: string | null;
+  aiSummary: string | null;
+  items: FoodItem[];
+}
+
+async function getPendingMeal(): Promise<PendingMeal | null> {
+  const raw = await getState(PENDING_MEAL);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PendingMeal;
+  } catch {
+    // Corrupt or stale state must never wedge the flow — treat it as gone.
+    await clearState(PENDING_MEAL);
+    return null;
+  }
+}
+
+/** Plain-text rendering of a breakdown, shared by both correction paths below. */
+function itemsAsText(summary: string, mealType: string, items: FoodItem[]): string {
+  const lines = [summary || mealType];
+  for (const i of items) {
+    lines.push(
+      `- ${i.food_name} (${i.quantity_desc}${i.grams ? `, ${i.grams}g` : ""}): ` +
+        `${Math.round(i.calories)} kcal, P${i.protein_g} C${i.carbs_g} F${i.fat_g}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function breakdownAsText(meal: MealWithItems): string {
+  return itemsAsText(
+    meal.aiSummary || meal.description || meal.mealType,
+    meal.mealType,
+    meal.items.map(dbItemToFoodItem),
+  );
+}
+
+/**
+ * Analyze a meal and hold it for confirmation — nothing is written to the log
+ * yet. A wrong reading (a hallucinated item, a missed one) gets fixed before
+ * it ever becomes a real entry, rather than after.
+ */
 async function logMeal(
   chatId: string,
   opts: {
@@ -210,47 +273,130 @@ async function logMeal(
   }
 
   const items = applyFoodMemory(analysis.items, await getAllFoodTemplates());
-  const id = await saveMeal({
+  const pending: PendingMeal = {
     mealType,
     inputType: opts.imageDataUrl ? "photo" : "text",
+    dayOffset: offset,
     description: opts.description ?? null,
     aiSummary: analysis.meal_summary || null,
     items,
-    loggedAt: at,
-  });
+  };
+  // A new analysis simply replaces whatever was pending before — if the user
+  // never confirmed or discarded it, it wasn't something they wanted kept.
+  await setState(PENDING_MEAL, JSON.stringify(pending));
 
   const prefs = await getSettings();
-  let text = formatLoggedMeal(
-    analysis.meal_summary,
+  let text = formatMealPreview(
+    pending.aiSummary ?? "",
     mealType,
     items,
-    await dayCalories(date),
+    await dayCalories(date), // today's total BEFORE this meal — it isn't saved yet
     prefs.calorieTarget,
   );
   if (offset !== 0) {
-    text = `${text}\n\n<i>Logged under ${dayLabel(offset, date).toLowerCase()}, ${formatDisplayDate(date)}.</i>`;
+    text = `${text}\n\n<i>Will log under ${dayLabel(offset, date).toLowerCase()}, ${formatDisplayDate(date)}.</i>`;
   }
-  await reply(chatId, text, loggedButtons(id));
+  await reply(chatId, text, previewButtons());
 }
 
-/** Which meal a pending "what was wrong?" answer applies to. */
+/** "✅ Log it" — the pending analysis becomes a real entry. */
+async function confirmPendingMeal(chatId: string): Promise<void> {
+  const pending = await getPendingMeal();
+  if (!pending) {
+    await reply(chatId, "Nothing pending to confirm — send a photo or describe a meal first.");
+    return;
+  }
+  const { at, date } = dateForOffset(pending.dayOffset);
+  const id = await saveMeal({
+    mealType: pending.mealType,
+    inputType: pending.inputType,
+    description: pending.description,
+    aiSummary: pending.aiSummary,
+    items: pending.items,
+    loggedAt: at,
+  });
+  await clearState(PENDING_MEAL);
+
+  const prefs = await getSettings();
+  let text = formatLoggedMeal(
+    pending.aiSummary ?? "",
+    pending.mealType,
+    pending.items,
+    await dayCalories(date),
+    prefs.calorieTarget,
+  );
+  if (pending.dayOffset !== 0) {
+    text = `${text}\n\n<i>Logged under ${dayLabel(pending.dayOffset, date).toLowerCase()}, ${formatDisplayDate(date)}.</i>`;
+  }
+  await reply(chatId, `✅ <i>Logged.</i>\n\n${text}`, loggedButtons(id));
+}
+
+/** "🗑 Discard" — the pending analysis is dropped; nothing was ever saved. */
+async function discardPendingMeal(chatId: string): Promise<void> {
+  const existed = await getPendingMeal();
+  await clearState(PENDING_MEAL);
+  await reply(
+    chatId,
+    existed
+      ? "Okay, discarded 🗑 — send another photo whenever you're ready."
+      : "Nothing pending to discard.",
+  );
+}
+
+/** A text reply while an analysis is pending — re-run it with the correction applied. */
+async function correctPendingMeal(chatId: string, correction: string): Promise<void> {
+  const pending = await getPendingMeal();
+  if (!pending) return;
+
+  let analysis;
+  try {
+    analysis = await analyzeMeal({
+      mealType: pending.mealType,
+      description: pending.description ?? undefined,
+      previous: itemsAsText(pending.aiSummary ?? "", pending.mealType, pending.items),
+      correction,
+    });
+  } catch (err) {
+    if (err instanceof RateLimitError) {
+      await reply(chatId, "Rate-limited for a moment — send that correction again shortly 🙏");
+      return;
+    }
+    console.error("telegram pending correction failed:", err);
+    await reply(chatId, "I couldn't work out that correction. Try describing the whole meal again, or tap 🗑 Discard.");
+    return;
+  }
+
+  if (analysis.no_food || analysis.items.length === 0) {
+    await reply(chatId, "That left nothing to log — tap 🗑 Discard if the whole thing was wrong.");
+    return;
+  }
+
+  const items = applyFoodMemory(analysis.items, await getAllFoodTemplates());
+  const updated: PendingMeal = {
+    ...pending,
+    items,
+    aiSummary: analysis.meal_summary || pending.aiSummary,
+  };
+  await setState(PENDING_MEAL, JSON.stringify(updated));
+
+  const prefs = await getSettings();
+  const text = formatMealPreview(
+    updated.aiSummary ?? "",
+    updated.mealType,
+    items,
+    await dayCalories(dateForOffset(updated.dayOffset).date),
+    prefs.calorieTarget,
+  );
+  await reply(chatId, `✏️ <i>Updated — still not logged.</i>\n\n${text}`, previewButtons());
+}
+
+/** Which meal a pending "what was wrong?" answer applies to, for the post-save fix flow. */
 const FIXING = "fixing_meal_id";
 
-/** Render a stored meal the way the model first described it, for re-analysis. */
-function breakdownAsText(meal: MealWithItems): string {
-  const lines = [meal.aiSummary || meal.description || meal.mealType];
-  for (const i of meal.items) {
-    lines.push(
-      `- ${i.foodName} (${i.quantityDesc}${i.grams ? `, ${i.grams}g` : ""}): ` +
-        `${Math.round(i.calories)} kcal, P${i.proteinG} C${i.carbsG} F${i.fatG}`,
-    );
-  }
-  return lines.join("\n");
-}
-
 /**
- * Re-estimate a logged meal from the user's correction. The photo isn't kept, so the
- * previous breakdown stands in for it — the user's words are treated as authoritative.
+ * Re-estimate an ALREADY SAVED meal from the user's correction. The photo isn't kept,
+ * so the previous breakdown stands in for it — the user's words are treated as
+ * authoritative. For a not-yet-saved analysis, see correctPendingMeal instead.
  */
 async function correctMeal(chatId: string, correction: string, mealId?: string): Promise<void> {
   const meal = mealId ? await getMealWithItems(mealId) : (await getRecentMeals(1))[0];
@@ -650,6 +796,14 @@ async function handleCallback(chatId: string, data: string, messageId?: number):
     );
     return;
   }
+  if (data === "confirm_meal") {
+    await confirmPendingMeal(chatId);
+    return;
+  }
+  if (data === "discard_meal") {
+    await discardPendingMeal(chatId);
+    return;
+  }
   if (data.startsWith("del:")) {
     await deleteMeal(data.slice(4));
     if (messageId) await editMessageText(chatId, messageId, "🗑 <i>Removed from your log.</i>");
@@ -760,6 +914,21 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
   await appendTurn("user", text);
   const routing = await routeMessage(text, history);
 
+  // An unconfirmed analysis owns the next message ONLY when the router reads it
+  // as a correction — a genuinely new food ("chicken rice") should start a fresh
+  // preview, not get folded into whatever was left pending.
+  const hadPending = await getPendingMeal();
+  if (hadPending) {
+    if (routing.intent === "correct_meal") {
+      await correctPendingMeal(chatId, text);
+      await pruneTurns();
+      return;
+    }
+    // They moved on without confirming or discarding — treat it as abandoned
+    // rather than silently merging an unrelated message into the old preview.
+    await clearState(PENDING_MEAL);
+  }
+
   if (routing.intent === "log_meal") {
     await logMeal(chatId, {
       description: text,
@@ -776,6 +945,7 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
   } else if (routing.intent === "set_profile" && routing.profile) {
     await applyProfile(chatId, routing.profile);
   } else if (routing.intent === "correct_meal") {
+    // No pending preview — this refers to the most recently SAVED meal instead.
     await correctMeal(chatId, text);
   } else if (routing.intent === "amend_date") {
     await amendDate(chatId, routing.dayOffset);

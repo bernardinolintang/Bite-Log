@@ -80,9 +80,26 @@ Prefer one message? Just type it: *"male, 27, 178cm, 72kg, lightly active"*. Sam
 
 ### Logging a meal
 
-**Send a photo.** Caption optional. About two seconds later:
+**Send a photo.** Caption optional. About two seconds later — **nothing is saved yet**:
 
 ```
+👀 Kaya toast with soft-boiled egg and coffee — does this look right?
+
+• Kaya Toast 2 slices — 360 kcal
+• Soft-boiled Egg 2 eggs — 155 kcal
+• Coffee (Kopi) 1 cup — 120 kcal
+
+635 kcal · P 19g C 66g F 33g
+Would bring today to 990 kcal
+        [ ✅ Log it ]  [ 🗑 Discard ]
+```
+
+**Tap ✅ Log it** and it's saved — now with **✏️ Fix this** and **🗑 Undo** in case something
+still slipped through:
+
+```
+✅ Logged.
+
 🍳 Kaya toast with soft-boiled egg and coffee
 
 • Kaya Toast 2 slices — 360 kcal
@@ -95,7 +112,12 @@ Today so far: 990 kcal
         [ ⚡️ Deficit ]
 ```
 
-**Or type it** — *"chicken rice and iced milo"*, *"just a flat white"*, *"two eggs on toast"*.
+**Or just say what's wrong** before confirming — *"no crab stick"*, *"that's french toast not
+kaya"*, *"3 slices not 2"* — and it redoes the analysis and shows you the updated preview
+again, still unsaved, as many rounds as you need. Nothing hits your log until you confirm it.
+
+**Or type the meal instead of a photo** — *"chicken rice and iced milo"*, *"just a flat
+white"* — same preview-first flow either way.
 
 **Back-date it** by saying so: *"that was yesterday's dinner"* logs it under yesterday.
 Already logged and on the wrong day? *"I told you that was yesterday"* moves it.
@@ -145,12 +167,17 @@ edit that array and nothing else needs changing.
 
 ## Correcting mistakes
 
-The AI gets things wrong. Two ways to fix it, and **corrections update the entry in place** —
-the meal keeps its date and position in your log.
+The AI gets things wrong — it once claimed a photo of chicken rice included a crab stick that
+was never there. Two situations, two ways to fix it, both **in place** — the meal keeps its
+date and position in your log, nothing gets duplicated.
 
-**Tap ✏️ Fix this**, then say what was wrong.
+**Still in the preview, not logged yet?** Just say what's wrong — see [Logging a
+meal](#logging-a-meal) above. It updates the same preview; still nothing saved until you tap
+✅ Log it.
 
-**Or just say it.** The bot understands that you're disputing its last breakdown rather than
+**Already logged — from earlier, or you tapped ✅ Log it before noticing?** Tap **✏️ Fix
+this** under that meal, then say what was wrong. Or just say it directly, without tapping
+anything first — the bot understands that you're disputing its last breakdown rather than
 describing a new meal:
 
 | You say | What happens |

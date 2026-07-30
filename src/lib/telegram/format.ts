@@ -21,7 +21,52 @@ const MEAL_EMOJI: Record<string, string> = {
 
 const r = (n: number) => Math.round(n);
 
-/** The breakdown shown right after a meal is logged. */
+/** The item bullets + macro line shared by the preview and the post-save breakdown. */
+function itemBulletsAndMacros(items: FoodItem[]): string[] {
+  const t = calcTotals(items);
+  const lines: string[] = [];
+  for (const i of items) {
+    const qty = i.quantity_desc ? ` <i>${esc(i.quantity_desc)}</i>` : "";
+    lines.push(`• ${esc(i.food_name)}${qty} — <b>${r(i.calories)}</b> kcal`);
+  }
+  lines.push("");
+  lines.push(`<b>${r(t.calories)} kcal</b>  ·  P ${r(t.protein_g)}g  C ${r(t.carbs_g)}g  F ${r(t.fat_g)}g`);
+  return lines;
+}
+
+function lowConfidenceNote(items: FoodItem[], followUp: string): string[] {
+  const low = items.filter((i) => i.confidence < 0.6);
+  if (!low.length) return [];
+  return ["", `<i>Rough guess on: ${esc(low.map((i) => i.food_name).join(", "))}. ${followUp}</i>`];
+}
+
+/**
+ * Shown right after analysis, before anything is saved. Deliberately doesn't
+ * fold this meal into "today's total" — it isn't logged yet, so that would
+ * read as already counted when it might still get edited or discarded.
+ */
+export function formatMealPreview(
+  summary: string,
+  mealType: string,
+  items: FoodItem[],
+  currentDayCalories: number,
+  target: number | null,
+): string {
+  const t = calcTotals(items);
+  const lines: string[] = [`👀 <b>${esc(summary || mealType)}</b> — does this look right?`, ""];
+  lines.push(...itemBulletsAndMacros(items));
+  const projected = currentDayCalories + t.calories;
+  lines.push(
+    target
+      ? `Would bring today to <b>${r(projected)}</b> / ${r(target)} kcal`
+      : `Would bring today to <b>${r(projected)}</b> kcal`,
+  );
+  lines.push(...lowConfidenceNote(items, "Worth double-checking before you log it."));
+  lines.push("", "<i>Tap Log it if that's right — or just tell me what's wrong and I'll fix it.</i>");
+  return lines.join("\n");
+}
+
+/** The breakdown shown right after a meal is actually saved. */
 export function formatLoggedMeal(
   summary: string,
   mealType: string,
@@ -29,26 +74,14 @@ export function formatLoggedMeal(
   dayTotalCalories: number,
   target: number | null,
 ): string {
-  const t = calcTotals(items);
-  const lines: string[] = [];
-  lines.push(`${MEAL_EMOJI[mealType] ?? "🍽"} <b>${esc(summary || mealType)}</b>`);
-  lines.push("");
-  for (const i of items) {
-    const qty = i.quantity_desc ? ` <i>${esc(i.quantity_desc)}</i>` : "";
-    lines.push(`• ${esc(i.food_name)}${qty} — <b>${r(i.calories)}</b> kcal`);
-  }
-  lines.push("");
-  lines.push(`<b>${r(t.calories)} kcal</b>  ·  P ${r(t.protein_g)}g  C ${r(t.carbs_g)}g  F ${r(t.fat_g)}g`);
+  const lines: string[] = [`${MEAL_EMOJI[mealType] ?? "🍽"} <b>${esc(summary || mealType)}</b>`, ""];
+  lines.push(...itemBulletsAndMacros(items));
   lines.push(
     target
       ? `Today: <b>${r(dayTotalCalories)}</b> / ${r(target)} kcal  (${Math.max(0, r(target - dayTotalCalories))} left)`
       : `Today so far: <b>${r(dayTotalCalories)}</b> kcal`,
   );
-  const lowConfidence = items.filter((i) => i.confidence < 0.6);
-  if (lowConfidence.length) {
-    lines.push("");
-    lines.push(`<i>Rough guess on: ${esc(lowConfidence.map((i) => i.food_name).join(", "))}. Tell me more and I'll redo it.</i>`);
-  }
+  lines.push(...lowConfidenceNote(items, "Tell me more and I'll redo it."));
   return lines.join("\n");
 }
 

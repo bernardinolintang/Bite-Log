@@ -150,7 +150,13 @@ describe("telegram bot flow", () => {
     expect(sent[0].text).toContain("private bot");
   });
 
-  it("logs a described meal and offers an undo button", async () => {
+  async function confirmPreview(cbId = `confirm-${Math.random()}`) {
+    await handleUpdate({
+      callback_query: { id: cbId, data: "confirm_meal", message: { message_id: 999, chat: { id: OWNER } } },
+    });
+  }
+
+  it("shows an unsaved preview first, then logs only once confirmed", async () => {
     routeMessage.mockResolvedValue(route("log_meal"));
     analyzeMeal.mockResolvedValue(toastAnalysis);
     await handleUpdate(textUpdate(OWNER, "two slices of toast"));
@@ -158,11 +164,92 @@ describe("telegram bot flow", () => {
     expect(analyzeMeal).toHaveBeenCalledOnce();
     expect(sent[0].text).toContain("Toast and eggs");
     expect(sent[0].text).toContain("160");
+    expect(sent[0].text).toContain("does this look right");
+    expect(JSON.stringify(sent[0].buttons)).toContain("confirm_meal");
+    expect(JSON.stringify(sent[0].buttons)).toContain("discard_meal");
+
+    const before = await getRecentMeals(50);
+
+    sent.length = 0;
+    await confirmPreview();
+    expect(sent[0].text).toContain("Logged");
     expect(JSON.stringify(sent[0].buttons)).toContain("del:");
 
-    const [meal] = await getRecentMeals(1);
-    expect(meal.aiSummary).toBe("Toast and eggs");
-    expect(meal.items).toHaveLength(1);
+    const after = await getRecentMeals(50);
+    expect(after.length).toBe(before.length + 1);
+    expect(after[0].aiSummary).toBe("Toast and eggs");
+    expect(after[0].items).toHaveLength(1);
+  });
+
+  it("discards a preview without saving anything", async () => {
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue(toastAnalysis);
+    await handleUpdate(textUpdate(OWNER, "two slices of toast"));
+    const before = await getRecentMeals(50);
+
+    sent.length = 0;
+    await handleUpdate({
+      callback_query: { id: "d1", data: "discard_meal", message: { message_id: 2, chat: { id: OWNER } } },
+    });
+    expect(sent[0].text).toContain("discarded");
+    expect(await getRecentMeals(50)).toHaveLength(before.length);
+  });
+
+  it("treats a reply to a pending preview as a correction, not a save", async () => {
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue(toastAnalysis);
+    await handleUpdate(textUpdate(OWNER, "toast"));
+    const before = await getRecentMeals(50);
+
+    sent.length = 0;
+    routeMessage.mockResolvedValue(route("correct_meal"));
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "Toast, no butter",
+      no_food: false,
+      clarification_questions: [],
+      items: [{ ...toastAnalysis.items[0], food_name: "Dry Toast", calories: 120 }],
+    });
+    await handleUpdate(textUpdate(OWNER, "no butter on that"));
+
+    expect(sent[0].text).toContain("Updated");
+    expect(sent[0].text).toContain("still not logged");
+    expect(JSON.stringify(sent[0].buttons)).toContain("confirm_meal");
+    expect(await getRecentMeals(50)).toHaveLength(before.length); // still nothing saved
+
+    sent.length = 0;
+    await confirmPreview();
+    const after = await getRecentMeals(50);
+    expect(after.length).toBe(before.length + 1);
+    expect(after[0].items[0].foodName).toBe("Dry Toast");
+  });
+
+  it("abandons a stale preview when the next message is a new, unrelated meal", async () => {
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue(toastAnalysis);
+    await handleUpdate(textUpdate(OWNER, "toast")); // creates a preview, never confirmed
+    const before = await getRecentMeals(50);
+
+    sent.length = 0;
+    routeMessage.mockResolvedValue(route("log_meal"));
+    analyzeMeal.mockResolvedValue({
+      meal_summary: "Chicken rice",
+      no_food: false,
+      clarification_questions: [],
+      items: [{ ...toastAnalysis.items[0], food_name: "Chicken Rice", calories: 600 }],
+    });
+    await handleUpdate(textUpdate(OWNER, "chicken rice"));
+
+    expect(sent[0].text).toContain("Chicken rice");
+    expect(JSON.stringify(sent[0].buttons)).toContain("confirm_meal");
+    expect(await getRecentMeals(50)).toHaveLength(before.length); // still nothing saved
+
+    sent.length = 0;
+    await confirmPreview();
+    const after = await getRecentMeals(50);
+    // Exactly one new row (the chicken rice) — the abandoned toast preview
+    // was never saved, so the count only grew by the confirmed meal.
+    expect(after.length).toBe(before.length + 1);
+    expect(after[0].items[0].foodName).toBe("Chicken Rice");
   });
 
   it("converses instead of logging when the message is not a meal", async () => {
@@ -196,6 +283,7 @@ describe("telegram bot flow", () => {
   });
 
   it("logs a photo, using the caption as extra context", async () => {
+    routeMessage.mockResolvedValue(route("log_meal"));
     analyzeMeal.mockResolvedValue(toastAnalysis);
     await handleUpdate({
       message: {
@@ -212,6 +300,10 @@ describe("telegram bot flow", () => {
       expect.objectContaining({ description: "no butter", imageDataUrl: expect.stringContaining("data:image") }),
     );
     expect(sent[0].text).toContain("Toast and eggs");
+    expect(JSON.stringify(sent[0].buttons)).toContain("confirm_meal");
+
+    // A photo isn't saved until confirmed either.
+    await confirmPreview();
   });
 
   it("removes the meal behind an undo button", async () => {
@@ -247,10 +339,16 @@ describe("telegram bot flow", () => {
     const today = todayString("Asia/Singapore");
 
     await handleUpdate(textUpdate(OWNER, "sausage platter, that was yesterday's dinner"));
+    expect(sent[0].text).toContain("Will log under yesterday");
 
-    const [meal] = await getRecentMeals(1);
-    expect(meal.loggedDate).not.toBe(today);
-    expect(meal.mealType).toBe("dinner");
+    sent.length = 0;
+    await confirmPreview();
+
+    // Not getRecentMeals(1): a back-dated meal has an earlier loggedAt than
+    // same-day meals, so it is never "most recent" once those coexist.
+    // "dinner" is unique to this test, so it's a reliable way to find it.
+    const meal = (await getRecentMeals(50)).find((m) => m.mealType === "dinner");
+    expect(meal?.loggedDate).not.toBe(today);
     expect(sent[0].text).toContain("Logged under yesterday");
   });
 
@@ -258,6 +356,8 @@ describe("telegram bot flow", () => {
     routeMessage.mockResolvedValue(route("log_meal"));
     analyzeMeal.mockResolvedValue(toastAnalysis);
     await handleUpdate(textUpdate(OWNER, "toast"));
+    sent.length = 0;
+    await confirmPreview();
     const [logged] = await getRecentMeals(1);
     expect(logged.loggedDate).toBe(todayString("Asia/Singapore"));
 
@@ -425,9 +525,12 @@ describe("telegram bot flow", () => {
     analyzeMeal.mockResolvedValue(toastAnalysis);
     await handleUpdate(textUpdate(OWNER, "chicken rice"));
     expect(analyzeMeal).toHaveBeenCalledOnce();
+    // Leaves a preview pending on purpose — clean it up so it can't leak into
+    // the next test (which starts its own, unrelated preview).
+    await confirmPreview();
   });
 
-  it("corrects a logged meal in place when told it's wrong", async () => {
+  it("corrects an already-saved meal in place when told it's wrong", async () => {
     routeMessage.mockResolvedValue(route("log_meal"));
     analyzeMeal.mockResolvedValue({
       meal_summary: "Kaya toast with soft-boiled egg and coffee",
@@ -438,6 +541,11 @@ describe("telegram bot flow", () => {
       ],
     });
     await handleUpdate(textUpdate(OWNER, "kaya toast set"));
+    // Confirm first — this test is specifically about correcting a meal that's
+    // already SAVED (no pending preview), which is a different code path from
+    // correcting a preview (covered above).
+    sent.length = 0;
+    await confirmPreview();
     const [logged] = await getRecentMeals(1);
     expect(logged.items[0].foodName).toBe("Kaya Toast");
 

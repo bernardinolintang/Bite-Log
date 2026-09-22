@@ -55,7 +55,7 @@ export async function analyzeWith(complete: Completer, input: AnalyzeInput): Pro
 }
 
 /** Vision-capable model on Groq. Kept in one place so a decommission is a one-line fix. */
-export const DEFAULT_GROQ_MODEL = "qwen/qwen3.6-27b";
+export const DEFAULT_GROQ_MODEL = "qwen/qwen3.8-27b";
 
 export interface CompleterOptions {
   /** Force a JSON object reply. Off for conversational answers. */
